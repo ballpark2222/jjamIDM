@@ -10,6 +10,18 @@ import 'package:freedm_update_api/freedm_update_api.dart';
 
 import 'desktop_controller.dart';
 
+/// Pinned bundle-signing public key (Ed25519, fdmsig/1). Bundles
+/// without a valid signature from this key are refused. The
+/// private seed lives outside the repo (release signing only).
+/// Dev key generated via tools/component-sign/sign_bundle.dart.
+const _signingKeyHex =
+    'f3096dd54ae7c2ec1abcbb2db13b30fa90315a67de52e78bb9af4a5d40cea9ac';
+final _signingKey = List<int>.generate(
+    _signingKeyHex.length ~/ 2,
+    (i) => int.parse(
+        _signingKeyHex.substring(i * 2, i * 2 + 2),
+        radix: 16));
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final dataDir =
@@ -47,6 +59,8 @@ Future<void> main() async {
     fetcher: _HttpFetcher(),
     store: LocalBundleStore(
         '$dataDir${Platform.pathSeparator}components'),
+    verifier:
+        Ed25519SignatureVerifier(trustedPublicKey: _signingKey),
   );
 
   final controller = DesktopController(

@@ -60,6 +60,13 @@
 - Real-binary verification: yt-dlp.exe 2026.08.19 probed the local
   HLS fixture AND a live YouTube watch page through YtDlpResolver —
   ~20 formats normalized (codec flags, protocol, sizes).
+- Real-binary verification: ffmpeg.exe 9.0.1 (gyan.dev essentials)
+  ran FfmpegMuxer.mux over lavfi-synthesized h264+aac inputs;
+  ffprobe confirms 1 video + 1 audio stream (tool/real_mux.dart).
+- Bundle signing: Ed25519SignatureVerifier (fdmsig/1 — sha256 gate
+  plus pinned-key ed25519 over bundle bytes), Ed25519Signer +
+  tools/component-sign/sign_bundle.dart (genkey/pubkey/sign);
+  desktop app pins the dev public key in ComponentManager.
 
 ## In Progress
 
@@ -76,7 +83,7 @@
 ## Test Summary
 
 - unit: core-domain 13, event-bus 1, persistence 4, media-api 5,
-  update-api 14
+  update-api 18 (incl. 4 signature tests)
 - application: scheduler 8 + url-refresh 11 (refresh→resume,
   same-file conflict, refresh failure, manual refreshSource)
 - contract: adapter-brisk 8, adapter-ytdlp 6, adapter-ffmpeg 4
@@ -84,7 +91,9 @@
 - e2e: native host → engine host → brisk → disk (M5);
   EngineHostClient ↔ engine-host ↔ brisk → sha256 disk (3)
 - desktop: flutter widget + helper tests 2
-- total: 76 dart tests + 2 flutter tests green
+- total: 80 dart tests + 2 flutter tests green
+- real-binary: yt-dlp 2026.08.19 probe (HLS fixture + live YouTube),
+  ffmpeg 9.0.1 mux (lavfi synth → ffprobe stream check)
 
 ## Known Limitations (for audit notes)
 
@@ -96,11 +105,11 @@
 - Brisk aggregate progress message reports totalReceivedBytes=0;
   adapter sums per-connection counts instead.
 - Brisk has no speed limiter — FreeDM throttle layer required (M4).
-- Sha256OnlyVerifier checks hashes only; release builds must plug a
-  minisign/ed25519 SignatureVerifier against a pinned public key.
-- yt-dlp real binary verified against fixture HLS + live YouTube
-  (adapter-ytdlp/tool/real_probe*.dart). FFmpeg real-binary check
-  remains release-stage work.
+- Bundles verify via Ed25519SignatureVerifier (fdmsig/1). The pinned
+  key is the DEV key — a release signing key + rotation story is
+  still a launch decision. Minisign interop not implemented.
+- Real binaries verified: yt-dlp 2026.08.19 (probe only — real
+  download path still exercised via fakes), ffmpeg 9.0.1 (mux).
 
 ## Environment notes
 
