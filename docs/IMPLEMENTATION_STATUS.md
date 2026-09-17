@@ -84,6 +84,12 @@
   ships desktop/ (exe + data/ + engine-host.exe + components/
   with yt-dlp.exe ffmpeg.exe ffprobe.exe). Smoke-tested: app
   launches and spawns the engine host.
+- Browser integration installed: tools/release/install.ps1 writes
+  the host manifest + %APPDATA% config + HKCU registration for
+  Chrome/Edge; extension manifest carries a fixed `key` so the
+  extension ID is deterministic (lfgb...amdo). Verified live:
+  packaged native host accepted the origin, cold-launched the
+  packaged engine host, ping → engineReachable: true.
 
 ## In Progress
 

@@ -35,9 +35,12 @@ atomic pointer로 활성화되며, 실패 시 이전 버전으로 rollback된다
    (yt-dlp/FFmpeg)가 같은 폴더에서 자동 로드된다.
 2. URL 입력 → 일반 파일은 Brisk 분할 다운로드, 미디어 페이지
    (YouTube 등)는 자동으로 yt-dlp 해석 + FFmpeg mux.
-3. 브라우저 연동: `browser-extension/`을 개발자 모드로 로드하고
-   `native-host-manifest.json`을 Chrome/Edge 네이티브 호스트로
-   등록하면 다운로드 가로채기가 동작한다.
+3. 브라우저 연동 (한 번만):
+   `powershell -File tools/release/install.ps1` — 네이티브 호스트
+   매니페스트/설정/레지스트리(HKCU, 관리자 불필요)를 자동 구성.
+   그 다음 `chrome://extensions` → 개발자 모드 → "압축해제된 확장
+   로드" → `browser-extension/` 선택. 확장은 고정 `key`를 포함해
+   ID가 항상 `lfgbaljhboceihkklkifpfbengheamdo`다.
 
 ## Status
 
