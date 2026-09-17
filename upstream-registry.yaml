@@ -8,12 +8,12 @@ components:
     provenance:
       type: github_source
       repository: https://github.com/BrisklyDev/brisk_download_engine
-      revision: PINNED_AT_VENDOR_TIME   # see components.lock for exact sha
+      revision: ec9e4f10ac1498e1ed9d6128276277641636b392   # v1.0.1
       license: MIT
     distribution:
       # dev-stage: vendored snapshot. Release-stage target: freedm_integration_bundle
       type: vendored_source
-      path: third_party/brisk-engine
+      path: third_party/brisk-engine/ec9e4f10ac1498e1ed9d6128276277641636b392
       target: freedm_integration_bundle
       repository: https://github.com/freedm/freedm-components   # placeholder org
       asset_pattern: "engine.brisk-*.fdmbundle"
@@ -23,6 +23,7 @@ components:
     update_policy: verified_one_click
     patches:
       - third_party/brisk-engine/patches/0001-remove-dead-path-provider-dep.patch
+      - third_party/brisk-engine/patches/0002-custom-headers-and-cancel.patch
 
   media.ytdlp:
     display_name: "yt-dlp"

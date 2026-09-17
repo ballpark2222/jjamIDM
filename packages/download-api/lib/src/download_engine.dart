@@ -45,8 +45,9 @@ abstract interface class DownloadEngine {
   /// Inspect URL headers without downloading (range support, size…).
   Future<ProbeResult> probe(DownloadRequest request);
 
-  /// Allocate engine state for [request]; nothing starts yet.
-  Future<EngineTaskHandle> create(DownloadRequest request);
+  /// Allocate engine state for [id]+[request]; nothing starts yet.
+  /// The same [id] must be used for all later calls on this task.
+  Future<EngineTaskHandle> create(TaskId id, DownloadRequest request);
 
   Future<void> start(TaskId id);
   Future<void> pause(TaskId id);

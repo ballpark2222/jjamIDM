@@ -1,0 +1,6 @@
+include: package:lints/recommended.yaml
+
+analyzer:
+  exclude:
+    # Vendored upstream sources are patched-only — never restyled.
+    - third_party/**

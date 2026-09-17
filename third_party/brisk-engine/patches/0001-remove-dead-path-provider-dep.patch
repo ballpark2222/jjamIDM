@@ -1,0 +1,12 @@
+diff --git a/C:/Users/myhome/AppData/Local/Temp/be-pristine/pubspec.yaml b/ec9e4f10ac1498e1ed9d6128276277641636b392/pubspec.yaml
+index 8cec196..2bbe046 100644
+--- a/C:/Users/myhome/AppData/Local/Temp/be-pristine/pubspec.yaml
++++ b/ec9e4f10ac1498e1ed9d6128276277641636b392/pubspec.yaml
+@@ -10,7 +10,6 @@ environment:
+ dependencies:
+   stream_channel: ^2.1.2
+   path: ^1.8.0
+-  path_provider: ^2.1.4
+   dartx: ^1.2.0
+   http: ^1.2.2
+   uuid: ^4.5.1

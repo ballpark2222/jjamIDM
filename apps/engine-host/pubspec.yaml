@@ -6,6 +6,14 @@ environment:
   sdk: ^3.13.0
 resolution: workspace
 dependencies:
+  freedm_core_domain:
+    path: ../../packages/core-domain
+  freedm_download_api:
+    path: ../../packages/download-api
+  freedm_engine_protocol:
+    path: ../../packages/engine-protocol
+  freedm_adapter_brisk:
+    path: ../../packages/adapter-brisk
 dev_dependencies:
   test: ^1.26.0
   lints: ^6.0.0

@@ -13,16 +13,31 @@ final class FixtureServer {
   /// Latest valid token for /file-expired-url; bumped by /issue.
   int _token = 0;
 
-  /// Deterministic payload: byte[i] = (i*seed + i) & 0xFF.
+  /// Remaining mid-body drops for /file-drop-connection.
+  int _dropBudget = 3;
+
+  /// Deterministic payload byte at absolute position [i].
+  /// Position-stable: a Range slice always matches the corresponding
+  /// slice of the virtual file, so hash checks work across segments.
+  static int fixtureByteAt(int i, {int seed = 7}) =>
+      (i * seed + i) & 0xFF;
+
+  /// Bytes of the virtual file at absolute range [start, start+length).
+  static List<int> fixtureRange(int start, int length, {int seed = 7}) =>
+      List<int>.generate(length, (j) => fixtureByteAt(start + j, seed: seed));
+
+  /// Convenience: full virtual file content.
   static List<int> fixtureBytes(int length, {int seed = 7}) =>
-      List<int>.generate(length, (i) => (i * seed + i) & 0xFF);
+      fixtureRange(0, length, seed: seed);
 
   static const int defaultLength = 1 << 20; // 1 MiB
 
   static Future<FixtureServer> start({int port = 0}) async {
     final s = FixtureServer._(await HttpServer.bind(
         InternetAddress.loopbackIPv4, port));
-    s._server.listen(s._handle);
+    // Socket write errors are expected from the drop fixtures —
+    // swallow them so they don't surface as unhandled async errors.
+    s._server.listen(s._handle, onError: (_) {});
     return s;
   }
 
@@ -36,72 +51,102 @@ final class FixtureServer {
     try {
       switch (req.uri.path) {
         case '/file':
-          return _serveFile(req, length: defaultLength);
+          return await _serveFile(req, length: defaultLength);
         case '/file-range':
-          return _serveFile(req, length: defaultLength, ranges: true);
+          return await _serveFile(req,
+              length: defaultLength, ranges: true);
         case '/file-no-range':
-          return _serveFile(req, length: defaultLength, ranges: false);
+          return await _serveFile(req,
+              length: defaultLength, ranges: false);
         case '/file-slow':
-          return _serveFile(req,
-              length: defaultLength, ranges: true, chunkDelay: 20);
+          final len = int.tryParse(
+                  req.uri.queryParameters['length'] ?? '') ??
+              defaultLength;
+          final delay = int.tryParse(
+                  req.uri.queryParameters['delay'] ?? '') ??
+              20;
+          return await _serveFile(req,
+              length: len, ranges: true, chunkDelay: delay);
         case '/file-drop-connection':
-          return _drop(req, at: defaultLength ~/ 2);
+          // The first N GET requests die mid-body; retries succeed —
+          // models a flaky connection that recovers. HEAD/probe
+          // requests always pass (a flaky data path, not flaky server).
+          if (req.method == 'GET' && _dropBudget > 0) {
+            _dropBudget--;
+            return await _drop(req, at: defaultLength ~/ 2);
+          }
+          return await _serveFile(req,
+              length: defaultLength, ranges: true);
+        case '/file-hang':
+          // Sends one chunk then holds the connection open forever —
+          // used to prove cancel works mid-flight.
+          res.headers.contentType =
+              ContentType('application', 'octet-stream');
+          res.contentLength = defaultLength;
+          res.add(fixtureBytes(64 * 1024));
+          await res.flush();
+          return await Completer<void>().future; // never completes
         case '/file-random-disconnect':
-          return _drop(req, at: Random().nextInt(defaultLength - 1) + 1);
+          return await _drop(
+              req, at: Random().nextInt(defaultLength - 1) + 1);
         case '/file-auth-cookie':
           if (req.headers.value('cookie')?.contains('session=fixture') ==
               true) {
-            return _serveFile(req, length: defaultLength, ranges: true);
+            return await _serveFile(req,
+                length: defaultLength, ranges: true);
           }
           return _deny(res, HttpStatus.unauthorized);
         case '/file-auth-header':
           if (req.headers.value('authorization') == 'Bearer fixture-token') {
-            return _serveFile(req, length: defaultLength, ranges: true);
+            return await _serveFile(req,
+                length: defaultLength, ranges: true);
           }
           return _deny(res, HttpStatus.unauthorized);
         case '/file-auth-referer':
           final ref = req.headers.value('referer') ?? '';
           if (ref.startsWith(base)) {
-            return _serveFile(req, length: defaultLength, ranges: true);
+            return await _serveFile(req,
+                length: defaultLength, ranges: true);
           }
           return _deny(res, HttpStatus.forbidden);
         case '/file-redirect':
           res.statusCode = HttpStatus.found;
           res.headers.set('location', '/file-range');
-          return res.close();
+          return await res.close();
         case '/issue':
           _token++;
           res.headers.contentType = ContentType.text;
           res.write('/file-expired-url?token=$_token');
-          return res.close();
+          return await res.close();
         case '/file-expired-url':
           final tok = int.tryParse(req.uri.queryParameters['token'] ?? '');
           if (tok != null && tok == _token) {
-            return _serveFile(req, length: defaultLength, ranges: true);
+            return await _serveFile(req,
+                length: defaultLength, ranges: true);
           }
           return _deny(res, HttpStatus.forbidden);
         case '/file-changing-etag':
-          return _serveFile(req,
+          return await _serveFile(req,
               length: defaultLength,
               ranges: true,
               etag: '"${Random().nextInt(1 << 31)}"');
         case '/file-changing-length':
-          return _serveFile(req,
+          return await _serveFile(req,
               length: defaultLength + Random().nextInt(4096),
               ranges: true);
         case '/hls/master.m3u8':
-          return _hls(res);
+          return await _hls(res);
         case '/dash/manifest.mpd':
-          return _dash(res);
+          return await _dash(res);
         default:
           if (req.uri.path.startsWith('/hls/seg')) {
-            return _serveFile(req, length: 64 * 1024, seed: 11);
+            return await _serveFile(req, length: 64 * 1024, seed: 11);
           }
           if (req.uri.path.startsWith('/dash/seg')) {
-            return _serveFile(req, length: 64 * 1024, seed: 13);
+            return await _serveFile(req, length: 64 * 1024, seed: 13);
           }
           res.statusCode = HttpStatus.notFound;
-          return res.close();
+          return await res.close();
       }
     } catch (_) {
       // client went away mid-stream — fine for drop fixtures
@@ -156,7 +201,7 @@ final class FixtureServer {
     var off = start;
     while (off <= end) {
       final n = min(chunk, end - off + 1);
-      res.add(fixtureBytes(n, seed: seed + (off ~/ chunk)));
+      res.add(fixtureRange(off, n, seed: seed));
       if (chunkDelay > 0) {
         await res.flush();
         await Future<void>.delayed(Duration(milliseconds: chunkDelay));
@@ -166,16 +211,43 @@ final class FixtureServer {
     return res.close();
   }
 
-  /// Announces [defaultLength] via Content-Length, detaches the socket
-  /// after headers are sent, then writes only [at] bytes before
-  /// destroying the connection — the client sees a truncated body.
+  /// Detaches the socket and writes a valid but truncated response:
+  /// honors Range like [_serveFile] (206 + Content-Range), announces the
+  /// full requested body via Content-Length, sends only part of it, then
+  /// destroys the connection — the client sees a mid-body drop whose
+  /// prefix bytes are still position-correct for its segment.
   Future<void> _drop(HttpRequest req, {required int at}) async {
     final res = req.response;
-    res.headers.set('etag', '"fixture-drop"');
-    res.contentLength = defaultLength;
+    res.headers.set('etag', '"fixture-7-$defaultLength"');
+    res.headers.set('accept-ranges', 'bytes');
+    res.headers.contentType =
+        ContentType('application', 'octet-stream');
+
+    var start = 0;
+    var end = defaultLength - 1;
+    final range = req.headers.value('range');
+    if (range != null) {
+      final m = RegExp(r'bytes=(\d+)-(\d*)').firstMatch(range);
+      if (m != null) {
+        start = int.parse(m.group(1)!);
+        if (m.group(2)!.isNotEmpty) end = int.parse(m.group(2)!);
+        end = min(end, defaultLength - 1);
+        res.statusCode = HttpStatus.partialContent;
+        res.headers
+            .set('content-range', 'bytes $start-$end/$defaultLength');
+      }
+    }
+
+    final bodyLen = end - start + 1;
+    res.contentLength = bodyLen;
     final socket = await res.detachSocket();
-    socket.add(fixtureBytes(at));
-    await socket.flush();
+    // Swallow socket-level errors — the client may already be gone,
+    // and unhandled async errors would trip the test runner.
+    unawaited(socket.done.catchError((_) => null));
+    socket.add(fixtureRange(start, min(at, bodyLen ~/ 2)));
+    try {
+      await socket.flush();
+    } catch (_) {}
     socket.destroy();
   }
 

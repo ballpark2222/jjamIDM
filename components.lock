@@ -6,7 +6,7 @@ version = "0.1.0"
 [engine_brisk]
 component_id = "engine.brisk"
 upstream_repo = "BrisklyDev/brisk_download_engine"
-upstream_revision = "TO_PIN_ON_VENDOR"
+upstream_revision = "ec9e4f10ac1498e1ed9d6128276277641636b392"
 bundle_version = "dev"
 engine_protocol = 1
 state_schema = 1

@@ -1,0 +1,82 @@
+diff --git a/C:/Users/myhome/AppData/Local/Temp/be-pristine/lib/src/download_engine/model/download_item_model.dart b/ec9e4f10ac1498e1ed9d6128276277641636b392/lib/src/download_engine/model/download_item_model.dart
+index 3e8e0fc..b7babbe 100644
+--- a/C:/Users/myhome/AppData/Local/Temp/be-pristine/lib/src/download_engine/model/download_item_model.dart
++++ b/ec9e4f10ac1498e1ed9d6128276277641636b392/lib/src/download_engine/model/download_item_model.dart
+@@ -23,6 +23,11 @@ class DownloadItemModel {
+ 
+   String status;
+ 
++  /// FreeDM patch 0002: caller-supplied request headers
++  /// (Cookie / Referer / Authorization / custom). Merged after the
++  /// engine's own defaults so callers can override them.
++  Map<String, String> headers;
++
+   DownloadItemModel({
+     this.id,
+     this.uid = "",
+@@ -36,5 +41,6 @@ class DownloadItemModel {
+     this.fileType = "other",
+     this.supportsPause = false,
+     this.status = "In Queue",
++    this.headers = const {},
+   });
+ }
+diff --git a/C:/Users/myhome/AppData/Local/Temp/be-pristine/lib/src/download_engine/connection/base_http_download_connection.dart b/ec9e4f10ac1498e1ed9d6128276277641636b392/lib/src/download_engine/connection/base_http_download_connection.dart
+index 82561b8..4146781 100644
+--- a/C:/Users/myhome/AppData/Local/Temp/be-pristine/lib/src/download_engine/connection/base_http_download_connection.dart
++++ b/ec9e4f10ac1498e1ed9d6128276277641636b392/lib/src/download_engine/connection/base_http_download_connection.dart
+@@ -232,7 +232,9 @@ abstract class BaseHttpDownloadConnection {
+ 
+   void sendDownloadRequest(http.Request request) {
+     try {
+-      http.get(request.url);
++      // FreeDM patch 0002: removed unauthenticated warm-up GET — it
++      // issued a second headerless request per connection which breaks
++      // auth-gated endpoints and adds non-deterministic traffic.
+       final response = client.send(request);
+       response.asStream().cast<http.StreamedResponse>().listen((response) {
+         response.stream.listen(
+@@ -325,6 +327,9 @@ abstract class BaseHttpDownloadConnection {
+       "User-Agent":
+           "Mozilla/5.0 (Windows NT 6.1; Trident/7.0; rv:11.0) like Gecko;",
+     });
++    // FreeDM patch 0002: caller-supplied headers (cookie/referer/auth)
++    // merged after engine defaults so they may override them.
++    request.headers.addAll(downloadItem.headers);
+     logger?.info("Request headers: ${request.headers}");
+     totalRequestWriteProgress = downloadProgress;
+     logger?.info("=========== Total connection temp files ===========");
+diff --git a/C:/Users/myhome/AppData/Local/Temp/be-pristine/lib/src/download_engine/http_download_engine.dart b/ec9e4f10ac1498e1ed9d6128276277641636b392/lib/src/download_engine/http_download_engine.dart
+index 0b8d0f8..920da66 100644
+--- a/C:/Users/myhome/AppData/Local/Temp/be-pristine/lib/src/download_engine/http_download_engine.dart
++++ b/ec9e4f10ac1498e1ed9d6128276277641636b392/lib/src/download_engine/http_download_engine.dart
+@@ -1313,8 +1313,12 @@ class HttpDownloadEngine {
+     return receivePort;
+   }
+ 
+-  static Future<FileInfo?> requestFileInfo(String url) async {
++  static Future<FileInfo?> requestFileInfo(String url,
++      {Map<String, String> headers = const {}}) async {
+     final request = http.Request("HEAD", Uri.parse(url));
++    // FreeDM patch 0002: forward caller headers so auth-gated
++    // endpoints can be probed too.
++    request.headers.addAll(headers);
+     final client = http.Client();
+     var response = client.send(request);
+     Completer<FileInfo?> completer = Completer();
+diff --git a/C:/Users/myhome/AppData/Local/Temp/be-pristine/lib/src/download_engine/download_engine.dart b/ec9e4f10ac1498e1ed9d6128276277641636b392/lib/src/download_engine/download_engine.dart
+index 17af36a..cf56b39 100644
+--- a/C:/Users/myhome/AppData/Local/Temp/be-pristine/lib/src/download_engine/download_engine.dart
++++ b/ec9e4f10ac1498e1ed9d6128276277641636b392/lib/src/download_engine/download_engine.dart
+@@ -21,6 +21,11 @@ class DownloadEngine {
+     _executeCommand(uid, DownloadCommand.start);
+   }
+ 
++  /// FreeDM patch 0002: public cancel — upstream kept this private.
++  static void cancel(String uid) {
++    _executeCommand(uid, DownloadCommand.cancel);
++  }
++
+   static void _executeCommand(String uid, DownloadCommand command) {
+     final message = DownloadIsolateMessage(
+       command: command,
