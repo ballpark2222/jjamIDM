@@ -116,9 +116,37 @@ final class FakeDownloader implements ComponentDownloader {
       String? formatId,
       Map<String, String> headers = const {},
       List<String> subtitleLangs = const [],
+      CancellationToken? cancel,
       void Function(double)? onProgress}) async {
     calls++;
     onProgress?.call(1.0);
+    await File(outputPath).writeAsBytes([9]);
+    return 0;
+  }
+}
+
+/// First call blocks until its CancellationToken fires (mimicking
+/// yt-dlp killed mid-run); the second call "resumes" and completes.
+final class PausableDownloader implements ComponentDownloader {
+  var calls = 0;
+  final started = Completer<void>();
+  @override
+  String get componentId => 'tool.ytdlp';
+  @override
+  Future<int> download(
+      {required String pageUrl,
+      required String outputPath,
+      String? formatId,
+      Map<String, String> headers = const {},
+      List<String> subtitleLangs = const [],
+      CancellationToken? cancel,
+      void Function(double)? onProgress}) async {
+    calls++;
+    if (calls == 1) {
+      if (!started.isCompleted) started.complete();
+      await cancel?.onCancelled;
+      return cancelledExitCode;
+    }
     await File(outputPath).writeAsBytes([9]);
     return 0;
   }
@@ -221,6 +249,41 @@ void main() {
     );
     await waitFor(mc, t.id, DownloadStatus.completed);
     expect(dl.calls, 1);
+    await mc.dispose();
+  });
+
+  test('component step pause → resume re-invokes and completes',
+      () async {
+    final dl = PausableDownloader();
+    final mc = MediaDownloadCoordinator(
+      engine: FakeEngine(),
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'v.mp4',
+        steps: [
+          ComponentDownloadStep(
+              componentId: 'tool.ytdlp', outputFileName: 'v.mp4'),
+        ],
+      )),
+      muxer: FakeMuxer(),
+      componentDownloaders: {'tool.ytdlp': dl},
+    );
+    final t = await mc.enqueueMedia(
+      const MediaSelection(pageUrl: 'https://x/watch'),
+      workDir: '${dir.path}/work',
+      targetDirectory: dir.path,
+    );
+    // Wait until the step is actually running, then pause it.
+    await dl.started.future.timeout(const Duration(seconds: 5));
+    await mc.pause(t.id);
+    final parked = await waitFor(mc, t.id, DownloadStatus.paused);
+    expect(parked.status, DownloadStatus.paused);
+
+    await mc.resume(t.id);
+    final done = await waitFor(mc, t.id, DownloadStatus.completed);
+    expect(done.status, DownloadStatus.completed);
+    expect(dl.calls, 2); // resume re-ran the same step
     await mc.dispose();
   });
 

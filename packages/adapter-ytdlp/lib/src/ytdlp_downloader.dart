@@ -30,6 +30,7 @@ final class YtDlpDownloader implements ComponentDownloader {
     String? formatId,
     Map<String, String> headers = const {},
     List<String> subtitleLangs = const [],
+    CancellationToken? cancel,
     void Function(double progress)? onProgress,
     Duration timeout = const Duration(minutes: 30),
   }) async {
@@ -52,6 +53,10 @@ final class YtDlpDownloader implements ComponentDownloader {
       environment: environment,
     );
     final timer = Timer(timeout, () => proc.kill(ProcessSignal.sigkill));
+    // Pause/cancel lands here — the process dies but yt-dlp's
+    // `.part` artifacts stay, so re-running the same args resumes.
+    final cancelSub = cancel?.onCancelled
+        .then((_) => proc.kill(ProcessSignal.sigkill));
     final re = RegExp(r'\[download\]\s+([\d.]+)%');
     void scan(String line) {
       final m = re.firstMatch(line);
@@ -72,7 +77,8 @@ final class YtDlpDownloader implements ComponentDownloader {
     ];
     final code = await proc.exitCode;
     timer.cancel();
+    unawaited(cancelSub);
     for (final s in subs) await s.cancel();
-    return code;
+    return cancel?.cancelled == true ? cancelledExitCode : code;
   }
 }

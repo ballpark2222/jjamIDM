@@ -87,6 +87,9 @@ final class JsonTaskRepository implements TaskRepository {
   Future<List<DownloadTask>> listActive() async => _tasks.values
       .where((t) =>
           t.status.isActive ||
+          // created = enqueued with autoStart off (download-later);
+          // recover() parks them back into memory.
+          t.status == DownloadStatus.created ||
           t.status == DownloadStatus.paused ||
           t.status == DownloadStatus.retryWait ||
           t.status == DownloadStatus.ready)

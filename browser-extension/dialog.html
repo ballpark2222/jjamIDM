@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>jjamIDM 다운로드</title>
+<style>
+  body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 16px; color: #222; }
+  h1 { font-size: 14px; margin: 0 0 12px; color: #1565c0; }
+  .url { font-size: 11px; color: #666; word-break: break-all; max-height: 3em;
+         overflow: hidden; margin-bottom: 12px; }
+  label { display: block; font-size: 12px; margin: 10px 0 4px; }
+  input[type=text], select { width: 100%; box-sizing: border-box; padding: 6px 8px;
+    border: 1px solid #bbb; border-radius: 4px; font-size: 13px; }
+  .row { display: flex; gap: 8px; align-items: end; }
+  .row > div { flex: 1; }
+  .row .num { flex: 0 0 90px; }
+  input[type=number] { width: 100%; box-sizing: border-box; padding: 6px 8px;
+    border: 1px solid #bbb; border-radius: 4px; font-size: 13px; }
+  .btns { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+  button { padding: 7px 16px; border-radius: 4px; font-size: 13px; cursor: pointer;
+           border: 1px solid #bbb; background: #f5f5f5; }
+  button.primary { background: #1565c0; color: #fff; border: 0; }
+  #err { color: #c62828; font-size: 12px; min-height: 1em; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>다운로드 시작</h1>
+<div class="url" id="url"></div>
+<label>파일 이름</label>
+<input id="filename" type="text">
+<div class="row">
+  <div>
+    <label>저장 폴더</label>
+    <select id="subdir">
+      <option value="">(기본 폴더)</option>
+    </select>
+  </div>
+  <div class="num">
+    <label>연결 수</label>
+    <input id="conns" type="number" min="1" max="16">
+  </div>
+</div>
+<div id="err"></div>
+<div class="btns">
+  <button id="later">나중에 받기</button>
+  <button id="now" class="primary">지금 받기</button>
+  <button id="cancel">취소</button>
+</div>
+<script src="dialog.js"></script>
+</body>
+</html>

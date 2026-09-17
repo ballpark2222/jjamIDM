@@ -160,6 +160,41 @@
   `packages/update-api` + `packages/plugin-api` stay — real tested
   code, reserved for component updates/plugins.
 
+## Feature round (options/queue/dialog/floating/media-pause)
+
+- Browser path now runs the real DownloadScheduler: native host
+  spawns engine-host with `--queue <dir> --max-concurrent N`
+  (config keys `queueDir`, `maxConcurrent`). `task.create` parks
+  (persisted, survives restart), `task.start` admits. Concurrency,
+  priority, retry-with-backoff, restart recovery now apply to
+  browser downloads (ADR-0006).
+- Extension options page (`options_page`): capture include/exclude
+  extension filters, type→subfolder routing (`mp4,mkv=비디오`),
+  connection count, notifications toggle, start-dialog toggle,
+  floating-button toggle.
+- Download-start dialog: `chrome.windows.create` popup
+  (`dialog.html`) with editable filename, folder dropdown
+  (type folders + rule pick), connection count, 지금 받기 /
+  나중에 받기 (parks via `start:false`) / 취소 (hands back to the
+  browser, recapture-safe).
+- Floating video button: `content.js` on all http(s) frames — a
+  shadow-DOM chip over hovered <video>/<audio>; http(s) src → file
+  download, blob/embedded → media pipeline on the page URL.
+- "모든 링크" context menu: collects `a[href]` via content script
+  (scripting fallback), filters to file-like URLs + user filters,
+  dedupes, caps at 200, bulk-enqueues.
+- Media pause/resume: `media.pause`/`media.resume` (v2 additive).
+  Engine steps pause in place; yt-dlp component steps kill the
+  process and resume from `.part` on resume; pause during
+  resolve/mux lands at the next download-step boundary. Restart
+  marks interrupted media tasks failed/cancelled.
+- Host: `start` command, validated `subdir` under downloadDir,
+  `start:false`, `maxConnections`, `priority`; pause/resume/cancel
+  fall back to media.* for coordinator-owned tasks.
+- Deferred (analysis done, not built): speed limiter (needs a
+  vendored Brisk token-bucket patch), clipboard watch (needs a
+  native-side poller — MV3 can't poll the clipboard).
+
 ## Environment notes
 
 - OS: Windows (user machine). git 2.39, node 24, python 3.10 present.

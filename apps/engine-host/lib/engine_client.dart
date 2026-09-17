@@ -218,6 +218,17 @@ final class EngineHostClient implements DownloadEngine {
   Future<void> cancelMedia(TaskId id) async =>
       _call(EngineProtocol.mediaCancel, {'taskId': id.value});
 
+  Future<void> pauseMedia(TaskId id) async =>
+      _call(EngineProtocol.mediaPause, {'taskId': id.value});
+
+  Future<void> resumeMedia(TaskId id) async =>
+      _call(EngineProtocol.mediaResume, {'taskId': id.value});
+
+  /// Raw task.status result — `known` says whether the host still
+  /// tracks the task; queue mode also reports the scheduler status.
+  Future<Map<String, Object?>> status(TaskId id) async =>
+      _call(EngineProtocol.taskStatus, {'taskId': id.value});
+
   @override
   Stream<EngineEvent> events(TaskId id) {
     final c = _taskEvents.putIfAbsent(

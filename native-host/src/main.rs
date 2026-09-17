@@ -27,6 +27,7 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "ping",
     "download",
     "media",
+    "start",
     "pause",
     "resume",
     "cancel",
@@ -61,6 +62,10 @@ struct Config {
     /// Download target dir — set host-side only; the browser payload
     /// can never dictate a filesystem path (injection guard).
     download_dir: Option<String>,
+    /// Scheduler concurrency for the browser-owned engine host.
+    max_concurrent: u32,
+    /// Persistent queue dir for the scheduler (task repo JSON).
+    queue_dir: Option<String>,
 }
 
 fn load_config() -> Config {
@@ -79,6 +84,14 @@ fn load_config() -> Config {
         engine_command: vec![],
         engine_cwd: None,
         download_dir: None,
+        max_concurrent: 3,
+        // Scheduler queue persists next to this config file so held
+        // and in-flight browser tasks survive a host restart.
+        queue_dir: path.as_deref().and_then(|p| {
+            std::path::Path::new(p)
+                .parent()
+                .map(|d| d.join("queue").to_string_lossy().into_owned())
+        }),
     };
     if let Some(p) = path {
         if let Ok(raw) = std::fs::read_to_string(&p) {
@@ -101,6 +114,13 @@ fn load_config() -> Config {
                     .map(str::to_string);
                 cfg.download_dir = j
                     .get("downloadDir")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                if let Some(n) = j.get("maxConcurrent").and_then(|v| v.as_u64()) {
+                    cfg.max_concurrent = n.clamp(1, 16) as u32;
+                }
+                cfg.queue_dir = j
+                    .get("queueDir")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
             }
@@ -149,6 +169,28 @@ fn validate_path_component(s: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `subdir` may name a nested folder under downloadDir — never an
+/// absolute path or a traversal out of it. Returns the sanitized
+/// relative path (backslash-separated).
+fn validate_subdir(s: &str) -> Result<String, String> {
+    if s.is_empty() || s.len() > 255 {
+        return Err("subdir length out of bounds".into());
+    }
+    if s.chars().any(|c| c.is_control()) {
+        return Err("subdir contains control characters".into());
+    }
+    let norm = s.replace('/', "\\");
+    if norm.starts_with('\\') || norm.contains(':') {
+        return Err("subdir must be relative".into());
+    }
+    for seg in norm.split('\\') {
+        if seg.is_empty() || seg == "." || seg == ".." {
+            return Err("subdir contains invalid segment".into());
+        }
+    }
+    Ok(norm)
+}
+
 // --------------------------------------------------------------------
 // Engine-host child process (NDJSON-RPC client)
 // --------------------------------------------------------------------
@@ -168,7 +210,14 @@ fn spawn_engine(cfg: &Config) -> Result<EngineClient, String> {
         return Err("engineCommand not configured".into());
     }
     let mut cmd = Command::new(&cfg.engine_command[0]);
-    cmd.args(&cfg.engine_command[1..])
+    cmd.args(&cfg.engine_command[1..]);
+    // Browser-spawned engines run in queue mode — scheduler-owned
+    // concurrency/retry/persistence instead of raw create+start.
+    if let Some(q) = &cfg.queue_dir {
+        cmd.arg("--queue").arg(q);
+    }
+    cmd.arg("--max-concurrent")
+        .arg(cfg.max_concurrent.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -378,16 +427,24 @@ fn handle(
                 .map(|d| d.as_nanos())
                 .unwrap_or(0));
 
+            // Optional type-folder routing: a relative subdir under
+            // the configured downloadDir. The browser never supplies
+            // absolute paths — validation above guarantees it.
+            let mut target_dir = cfg.download_dir.clone().unwrap_or_else(|| {
+                env::var("USERPROFILE")
+                    .map(|u| format!("{}\\Downloads", u))
+                    .unwrap_or_else(|_| ".".into())
+            });
+            if let Some(sub) = p.get("subdir").and_then(|v| v.as_str()) {
+                let rel = validate_subdir(sub)?;
+                target_dir = format!("{}\\{}", target_dir, rel);
+                std::fs::create_dir_all(&target_dir)
+                    .map_err(|e| format!("cannot create subdir: {}", e))?;
+            }
+
             let mut dto = Map::new();
             dto.insert("url".into(), json!(url));
-            dto.insert(
-                "targetDirectory".into(),
-                json!(cfg.download_dir.clone().unwrap_or_else(|| {
-                    env::var("USERPROFILE")
-                        .map(|u| format!("{}\\Downloads", u))
-                        .unwrap_or_else(|_| ".".into())
-                })),
-            );
+            dto.insert("targetDirectory".into(), json!(target_dir));
             if let Some(f) = p.get("suggestedFilename").and_then(|v| v.as_str()) {
                 dto.insert("fileName".into(), json!(f));
             }
@@ -400,13 +457,24 @@ fn handle(
             if !headers.is_empty() {
                 dto.insert("headers".into(), Value::Object(headers));
             }
+            if let Some(mc) = p.get("maxConnections").and_then(|v| v.as_u64()) {
+                dto.insert("maxConnections".into(), json!(mc.clamp(1, 16)));
+            }
             let mut params = Map::new();
             params.insert("taskId".into(), json!(task_id));
             params.insert("request".into(), Value::Object(dto));
+            if let Some(pr) = p.get("priority").and_then(|v| v.as_i64()) {
+                params.insert("priority".into(), json!(pr));
+            }
             e.call("task.create", params)?;
-            let mut sp = Map::new();
-            sp.insert("taskId".into(), json!(task_id));
-            e.call("task.start", sp)?;
+            // start:false parks the task in the scheduler queue —
+            // a later `start` command admits it.
+            let start = p.get("start").and_then(|v| v.as_bool()).unwrap_or(true);
+            if start {
+                let mut sp = Map::new();
+                sp.insert("taskId".into(), json!(task_id));
+                e.call("task.start", sp)?;
+            }
             let mut sub = Map::new();
             sub.insert("taskId".into(), json!(task_id));
             e.call("task.subscribeEvents", sub)?;
@@ -454,13 +522,13 @@ fn handle(
             match e.call(&method, p.clone()) {
                 Ok(v) => Ok(v),
                 // media tasks live in the coordinator — task.* does
-                // not know them; fall back to media.cancel.
-                Err(err) if msg.command == "cancel" => {
+                // not know them; fall back to media.<cmd>.
+                Err(err) => {
                     let mut mp = Map::new();
                     mp.insert("taskId".into(), json!(id));
-                    e.call("media.cancel", mp).map_err(|_| err)
+                    e.call(&format!("media.{}", msg.command), mp)
+                        .map_err(|_| err)
                 }
-                Err(err) => Err(err),
             }?;
             Ok(json!({"ok": true}))
         }

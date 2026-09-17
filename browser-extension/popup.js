@@ -60,6 +60,10 @@ async function refresh() {
 
 $('#enabled').onchange = (e) =>
   chrome.storage.local.set({ enabled: e.target.checked });
+$('#opts').onclick = (e) => {
+  e.preventDefault();
+  chrome.runtime.openOptionsPage();
+};
 chrome.storage.onChanged.addListener(refresh);
 refresh();
 setInterval(refresh, 3000);

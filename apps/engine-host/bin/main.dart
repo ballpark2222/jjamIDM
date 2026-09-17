@@ -5,6 +5,7 @@ import 'package:freedm_adapter_brisk/freedm_adapter_brisk.dart';
 import 'package:freedm_adapter_ffmpeg/freedm_adapter_ffmpeg.dart';
 import 'package:freedm_adapter_ytdlp/freedm_adapter_ytdlp.dart';
 import 'package:freedm_application/freedm_application.dart';
+import 'package:freedm_core_domain/freedm_core_domain.dart';
 import 'package:freedm_engine_host/engine_host_server.dart';
 import 'package:freedm_event_bus/freedm_event_bus.dart';
 import 'package:freedm_persistence/freedm_persistence.dart';
@@ -14,10 +15,17 @@ import 'package:freedm_persistence/freedm_persistence.dart';
 /// Usage:
 ///   freedm-engine-host [--temp-root DIR] [--ytdlp PATH]
 ///                      [--ffmpeg PATH] [--data-dir DIR]
+///                      [--queue FILE] [--max-concurrent N]
 ///
 /// Speaks DownloadEngine Protocol v2 on stdin/stdout (NDJSON-RPC).
 /// When media binaries are resolvable, media.probe/media.enqueue/
-/// media.cancel are served in-process (yt-dlp + FFmpeg adapters).
+/// media.cancel/media.pause/media.resume are served in-process.
+///
+/// With --queue, task.* calls route through the application
+/// DownloadScheduler (concurrency, priority, retry, persistence in
+/// FILE) — used by the browser native host which has no control
+/// plane of its own. The desktop app runs its own scheduler and
+/// spawns this host without --queue.
 Future<void> main(List<String> args) async {
   final sep = Platform.pathSeparator;
   var tempRoot =
@@ -26,6 +34,8 @@ Future<void> main(List<String> args) async {
       Directory('${Directory.systemTemp.path}${sep}freedm-engine');
   String? ytdlp = Platform.environment['FREEDM_YTDLP'];
   String? ffmpeg = Platform.environment['FREEDM_FFMPEG'];
+  String? queueFile;
+  var maxConcurrent = 3;
   for (var i = 0; i + 1 < args.length; i++) {
     switch (args[i]) {
       case '--temp-root':
@@ -36,6 +46,10 @@ Future<void> main(List<String> args) async {
         ytdlp = args[i + 1];
       case '--ffmpeg':
         ffmpeg = args[i + 1];
+      case '--queue':
+        queueFile = args[i + 1];
+      case '--max-concurrent':
+        maxConcurrent = int.tryParse(args[i + 1]) ?? 3;
     }
   }
 
@@ -99,8 +113,27 @@ Future<void> main(List<String> args) async {
         'ffmpeg=$ffmpeg) — media.* methods disabled');
   }
 
+  DownloadScheduler? scheduler;
+  if (queueFile != null) {
+    final repo =
+        await JsonTaskRepository.open(Directory(queueFile));
+    var seq = 0;
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    scheduler = DownloadScheduler(
+      engine: engine,
+      repository: repo,
+      eventBus: InMemoryEventBus(),
+      // Callers pass explicit taskIds; this only covers gaps.
+      idGenerator: () => TaskId('q$stamp-${seq++}'),
+      maxConcurrent: maxConcurrent,
+    );
+    await scheduler.recover();
+    await media?.recover();
+  }
+
   final server = EngineHostServer(
-      engine: engine, tempRoot: tempRoot, media: media);
+      engine: engine, tempRoot: tempRoot,
+      media: media, scheduler: scheduler);
   await server.run(
       stdin.transform(utf8.decoder).transform(const LineSplitter()));
 }

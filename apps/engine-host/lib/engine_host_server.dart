@@ -23,6 +23,7 @@ final class EngineHostServer {
     required this.engine,
     required Directory tempRoot,
     this.media,
+    this.scheduler,
     IOSink? out,
   })  : _tempRoot = tempRoot,
         _out = out ?? stdout {
@@ -36,11 +37,17 @@ final class EngineHostServer {
 
   final DownloadEngine engine;
   final MediaDownloadCoordinator? media;
+
+  /// When set (browser-spawned hosts), task.* calls route through
+  /// the application scheduler: queueing, concurrency, priority,
+  /// retry policy and restart recovery apply instead of the raw
+  /// create+start passthrough the desktop control plane uses.
+  final DownloadScheduler? scheduler;
   final Directory _tempRoot;
   final IOSink _out;
 
   StreamSubscription<DownloadTask>? _mediaSub;
-  final _eventSubs = <String, StreamSubscription<EngineEvent>>{};
+  final _eventSubs = <String, StreamSubscription<dynamic>>{};
   final _created = <String>{}; // taskIds known to this host
 
   Future<void> run(Stream<String> lines) async {
@@ -123,24 +130,68 @@ final class EngineHostServer {
       case EngineProtocol.taskCreate:
         final dto = DownloadRequestDto.fromJson(
             (req.params['request'] as Map).cast<String, Object?>());
-        final h = await engine.create(TaskId(taskId()), toDomain(dto));
+        final id = TaskId(taskId());
+        final s = scheduler;
+        if (s != null) {
+          // Queue mode: the task is persisted now and stays parked
+          // until task.start — "download later" entries survive a
+          // host restart via the repository.
+          await s.enqueue(toDomain(dto),
+              id: id,
+              priority: (req.params['priority'] as num?)?.toInt() ?? 0,
+              autoStart: false);
+          _created.add(id.value);
+          return {'engineTaskId': id.value};
+        }
+        final h = await engine.create(id, toDomain(dto));
         _created.add(taskId());
         return {'engineTaskId': h.engineTaskId};
 
       case EngineProtocol.taskStart:
-        await engine.start(TaskId(taskId()));
+        final id = TaskId(taskId());
+        final s = scheduler;
+        if (s != null) {
+          await s.start(id);
+          return const {};
+        }
+        await engine.start(id);
         return const {};
 
       case EngineProtocol.taskPause:
-        await engine.pause(TaskId(taskId()));
+        final id = TaskId(taskId());
+        final s = scheduler;
+        if (s != null) {
+          await s.pause(id);
+          return const {};
+        }
+        await engine.pause(id);
         return const {};
 
       case EngineProtocol.taskResume:
-        await engine.resume(TaskId(taskId()));
+        final id = TaskId(taskId());
+        final s = scheduler;
+        if (s != null) {
+          // resume covers paused; a still-parked task wants start.
+          final st = s.task(id)?.status;
+          if (st == DownloadStatus.created ||
+              st == DownloadStatus.ready) {
+            await s.start(id);
+          } else {
+            await s.resume(id);
+          }
+          return const {};
+        }
+        await engine.resume(id);
         return const {};
 
       case EngineProtocol.taskCancel:
-        await engine.cancel(TaskId(taskId()));
+        final id = TaskId(taskId());
+        final s = scheduler;
+        if (s != null) {
+          await s.cancel(id);
+          return const {};
+        }
+        await engine.cancel(id);
         return const {};
 
       case EngineProtocol.taskCheckpoint:
@@ -159,12 +210,15 @@ final class EngineHostServer {
         return const {};
 
       case EngineProtocol.taskStatus:
+        final id = TaskId(taskId());
         final p = engine is BriskEngineAdapter
-            ? (engine as BriskEngineAdapter)
-                .lastProgress(TaskId(taskId()))
+            ? (engine as BriskEngineAdapter).lastProgress(id)
             : null;
+        final st = scheduler?.task(id)?.status;
         return {
-          'known': _created.contains(taskId()),
+          'known': _created.contains(taskId()) ||
+              scheduler?.task(id) != null,
+          if (st != null) 'status': st.name,
           if (p != null) 'receivedBytes': p.receivedBytes,
           if (p?.totalBytes != null) 'totalBytes': p!.totalBytes,
           if (p?.speedBytesPerSecond != null)
@@ -237,6 +291,22 @@ final class EngineHostServer {
         await m.cancel(TaskId(taskId()));
         return const {};
 
+      case EngineProtocol.mediaPause:
+        final m = media;
+        if (m == null) {
+          throw UnsupportedError('media pipeline not configured');
+        }
+        await m.pause(TaskId(taskId()));
+        return const {};
+
+      case EngineProtocol.mediaResume:
+        final m = media;
+        if (m == null) {
+          throw UnsupportedError('media pipeline not configured');
+        }
+        await m.resume(TaskId(taskId()));
+        return const {};
+
       case EngineProtocol.shutdown:
         _send(RpcResponse.ok(req.id, const {}).encode());
         for (final s in _eventSubs.values) {
@@ -249,6 +319,76 @@ final class EngineHostServer {
 
   void _subscribe(String taskId) {
     _eventSubs[taskId]?.cancel();
+    final s = scheduler;
+    if (s != null) {
+      // Queue mode: engine.create may not have run yet (task parked
+      // or waiting for a slot), so a raw engine.events() here would
+      // be empty forever. Scheduler task changes carry status+bytes;
+      // raw engine events get attached once the task dispatches.
+      StreamSubscription<EngineEvent>? engSub;
+      void attachEngine() {
+        if (engSub != null) return;
+        // The scheduler flips status to `downloading` BEFORE calling
+        // engine.create — subscribing then yields an empty stream.
+        // Retry on the next active emission (progress/transition)
+        // once the engine actually knows the task.
+        final br = engine;
+        if (br is BriskEngineAdapter && !br.isKnown(TaskId(taskId))) {
+          return;
+        }
+        engSub = engine.events(TaskId(taskId)).listen((e) {
+          _send(RpcNotification(
+            method: EngineProtocol.taskEvent,
+            params: {'taskId': taskId, ..._eventJson(e)},
+          ).encode());
+        });
+      }
+      void emitStatus(DownloadTask t) {
+        // Best-effort output path so a completed notification still
+        // gets open/reveal buttons even if the raw engine event
+        // loses the race against this status record.
+        String? outPath;
+        if (t.status == DownloadStatus.completed) {
+          final name = t.output.fileName ??
+              (t.source.finalUrl ?? t.source.initialUrl)
+                  .split('/')
+                  .last;
+          if (name.isNotEmpty) {
+            outPath = '${t.output.targetDirectory}'
+                '${Platform.pathSeparator}$name';
+          }
+        }
+        _send(RpcNotification(
+          method: EngineProtocol.taskEvent,
+          params: {
+            'taskId': taskId,
+            'type': 'progress',
+            'status': t.status.name,
+            'receivedBytes': t.receivedBytes,
+            'totalBytes': t.totalBytes,
+            if (outPath != null) 'outputPath': outPath,
+            if (t.lastError != ErrorCode.none)
+              'error': t.lastError.name,
+          },
+        ).encode());
+      }
+      _eventSubs[taskId] = s.changes.listen((t) {
+        if (t.id.value != taskId) return;
+        if (t.status.isActive) attachEngine();
+        emitStatus(t);
+        if (t.status.isTerminal) {
+          engSub?.cancel();
+          _eventSubs.remove(taskId)?.cancel();
+        }
+      });
+      final cur = s.task(TaskId(taskId));
+      if (cur != null) {
+        if (cur.status.isActive) attachEngine();
+        emitStatus(cur);
+        if (cur.status.isTerminal) _eventSubs.remove(taskId)?.cancel();
+      }
+      return;
+    }
     _eventSubs[taskId] =
         engine.events(TaskId(taskId)).listen((e) {
       _send(RpcNotification(

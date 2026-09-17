@@ -147,6 +147,10 @@ final class DownloadScheduler {
     RetryPolicy retryPolicy = const RetryPolicy(),
     String? credentialRef,
     TaskId? id,
+
+    /// When false the task stays `created` and persisted until
+    /// [start] is called — "download later" queue entries.
+    bool autoStart = true,
   }) async {
     final now = _clock().toUtc();
     final task = DownloadTask(
@@ -171,8 +175,25 @@ final class DownloadScheduler {
     await _repo.upsert(task);
     _bus.publish(DownloadCreated(task.id, now));
     _emit(task);
-    unawaited(_resolveAndDispatch(task));
+    if (autoStart) unawaited(_resolveAndDispatch(task));
     return task;
+  }
+
+  /// Admit a held (`created`) task into the queue, or nudge a ready
+  /// task's slot check. No-op for anything already running/terminal.
+  Future<void> start(TaskId id) async {
+    final t = _tasks[id.value];
+    if (t == null) throw StateError('unknown task ${id.value}');
+    switch (t.status) {
+      case DownloadStatus.created:
+        unawaited(_resolveAndDispatch(t));
+      case DownloadStatus.ready:
+        _pump();
+      case DownloadStatus.paused:
+        await resume(id);
+      default:
+        break;
+    }
   }
 
   Future<void> pause(TaskId id) async {

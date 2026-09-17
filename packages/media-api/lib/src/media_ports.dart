@@ -1,4 +1,27 @@
+import 'dart:async';
+
 import 'media_types.dart';
+
+/// Cooperative cancellation for a component download. [cancel] asks
+/// the downloader to stop and return [cancelledExitCode] while
+/// keeping partial artifacts (e.g. yt-dlp `.part` files) so a later
+/// invocation with the same arguments resumes — this is how media
+/// "pause" is implemented for subprocess-based steps.
+final class CancellationToken {
+  final _done = Completer<void>();
+  bool _cancelled = false;
+  bool get cancelled => _cancelled;
+  Future<void> get onCancelled => _done.future;
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    if (!_done.isCompleted) _done.complete();
+  }
+}
+
+/// [ComponentDownloader.download] returns this instead of a real
+/// process exit code when its [CancellationToken] fired.
+const int cancelledExitCode = -100;
 
 /// Port: turns a page/media URL into normalized formats and a
 /// download plan (design doc §18). Implemented by adapter-ytdlp —
@@ -33,6 +56,7 @@ abstract interface class ComponentDownloader {
     String? formatId,
     Map<String, String> headers,
     List<String> subtitleLangs,
+    CancellationToken? cancel,
     void Function(double progress)? onProgress,
   });
 }

@@ -26,7 +26,55 @@ const TASK_CAP = 500, SET_CAP = 1000;
 
 const notifPaths = new Map(); // notificationId -> outputPath
 
-function notify(title, message) {
+// ---- user settings ---------------------------------------------------
+const SETTING_DEFAULTS = {
+  notifications: true,
+  askBeforeDownload: true,
+  floatingButton: true,
+  maxConnections: 8,
+  captureFilter: '',
+  excludeFilter: '',
+  typeFolders: '',
+};
+async function getSettings() {
+  const { settings } = await chrome.storage.local.get({ settings: {} });
+  return { ...SETTING_DEFAULTS, ...settings };
+}
+
+function extOf(url) {
+  try {
+    const last = new URL(url).pathname.split('/').pop() || '';
+    const dot = last.lastIndexOf('.');
+    return dot > 0 ? last.slice(dot + 1).toLowerCase() : '';
+  } catch { return ''; }
+}
+const parseExtList = (s) => new Set(
+    (s || '').split(',').map((x) => x.trim().toLowerCase())
+        .filter(Boolean));
+
+// Auto-capture filter: include-list (empty = all) minus exclude-list.
+function passesFilter(url, s) {
+  const ext = extOf(url);
+  const inc = parseExtList(s.captureFilter);
+  const exc = parseExtList(s.excludeFilter);
+  if (exc.has(ext)) return false;
+  if (inc.size && !inc.has(ext)) return false;
+  return true;
+}
+
+// Type → subfolder routing ("mp4,mkv=비디오" lines → '비디오').
+function subdirFor(url, filename, s) {
+  const ext = extOf(filename ? `x/${filename}` : url);
+  for (const line of (s.typeFolders || '').split('\n')) {
+    const [exts, folder] = line.split('=');
+    if (!folder) continue;
+    if (parseExtList(exts).has(ext)) return folder.trim();
+  }
+  return '';
+}
+
+async function notify(title, message) {
+  if (!(await getSettings()).notifications) return;
   chrome.notifications.create({
     type: 'basic',
     iconUrl: 'icons/icon48.png',
@@ -38,7 +86,8 @@ function notify(title, message) {
 // IDM-style completion popup: buttons to open the file / its folder.
 // Chrome forbids opening real popups programmatically, so the
 // notification is the closest allowed surface.
-function notifyDone(name, outputPath) {
+async function notifyDone(name, outputPath) {
+  if (!(await getSettings()).notifications) return;
   const id = `done-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   if (outputPath) notifPaths.set(id, outputPath);
   chrome.notifications.create(id, {
@@ -152,7 +201,10 @@ async function cookiesFor(url) {
   }
 }
 
-async function sendToFreeDM({ url, referer, filename, pageUrl }) {
+async function sendToFreeDM({
+  url, referer, filename, pageUrl, subdir, startNow = true,
+  maxConnections, priority,
+}) {
   const headers = {};
   const cookie = await cookiesFor(url);
   if (cookie) headers.cookie = cookie;
@@ -163,8 +215,13 @@ async function sendToFreeDM({ url, referer, filename, pageUrl }) {
     suggestedFilename: filename,
     userAgent: navigator.userAgent,
     headers,
+    subdir: subdir || undefined,
+    start: startNow,
+    maxConnections,
+    priority,
   });
-  notify('jjamIDM — 다운로드 시작', filename || url);
+  notify('jjamIDM — 다운로드 시작',
+      `${filename || url}${startNow ? '' : ' (대기열에 추가)'}`);
   return res.taskId;
 }
 
@@ -188,6 +245,41 @@ async function enabled() {
   return s.enabled;
 }
 
+// ---- start dialog ----------------------------------------------------
+// Requests waiting on the user in dialog.html. The dialog window is
+// opened via chrome.windows.create (allowed in response to user
+// gestures — a programmatic action-popup is not).
+const pendingDialog = new Map(); // token -> request payload
+
+function openStartDialog(payload) {
+  const token = `d${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  pendingDialog.set(token, payload);
+  chrome.windows.create({
+    url: `dialog.html#${token}`,
+    type: 'popup',
+    width: 540,
+    height: 330,
+    focused: true,
+  }).catch(() => {
+    // Popup blocked (shouldn't happen for windows) → just enqueue.
+    pendingDialog.delete(token);
+    sendToFreeDM(payload).catch(() => {});
+  });
+}
+
+// Entry point for every file download: applies settings, routes to
+// the dialog when askBeforeDownload is on, else sends directly.
+async function requestDownload(payload) {
+  const s = await getSettings();
+  payload.subdir ??= subdirFor(payload.url, payload.filename, s);
+  payload.maxConnections ??= s.maxConnections;
+  if (s.askBeforeDownload) {
+    openStartDialog(payload);
+    return null;
+  }
+  return sendToFreeDM(payload);
+}
+
 // ---- capture: browser decided it's a download → take over ----------
 // URLs whose capture failed and were handed back to the browser.
 // Without this, restarting the browser download re-fires onCreated
@@ -200,16 +292,20 @@ chrome.downloads.onCreated.addListener(async (item) => {
     if (item.state !== 'in_progress') return;
     const url = item.finalUrl || item.url;
     if (captureFailed.has(url) || captureFailed.has(item.url)) return;
+    const s = await getSettings();
+    if (!passesFilter(url, s)) return;
     await chrome.downloads.cancel(item.id);
     await chrome.downloads.erase({ id: item.id });
-    const taskId = await sendToFreeDM({
+    const taskId = await requestDownload({
       url,
       referer: item.referrer,
       filename: item.filename ? item.filename.split(/[\\/]/).pop() : undefined,
       pageUrl: item.referrer,
     });
-    boundedPut(tasks, taskId,
-        { taskId, type: 'progress', receivedBytes: 0 }, TASK_CAP);
+    if (taskId) {
+      boundedPut(tasks, taskId,
+          { taskId, type: 'progress', receivedBytes: 0 }, TASK_CAP);
+    }
   } catch (e) {
     console.warn('capture failed, leaving browser download off', e);
     notify('jjamIDM — 전송 실패 (브라우저 다운로드로 복구)', String(e));
@@ -238,12 +334,41 @@ chrome.runtime.onInstalled.addListener(() => {
     title: 'Download selected links with jjamIDM',
     contexts: ['selection'],
   });
+  chrome.contextMenus.create({
+    id: 'freedm-all',
+    title: 'Download all links on this page with jjamIDM',
+    contexts: ['page'],
+  });
 });
+
+// Links whose last path segment has an extension that looks like a
+// file (not a page route) — "all links" only queues real files.
+const PAGE_LIKE = new Set(['html', 'htm', 'php', 'aspx', 'asp', 'jsp', '']);
+function looksLikeFile(url) {
+  return !PAGE_LIKE.has(extOf(url));
+}
+
+async function collectPageLinks(tabId) {
+  try {
+    const r = await chrome.tabs.sendMessage(
+        tabId, { type: 'jjamidm-collect-links' });
+    return r?.urls || [];
+  } catch {
+    // Content script not injected on this page — fall back to a
+    // one-shot scripting eval.
+    const [r] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => [...document.querySelectorAll('a[href]')]
+          .map((a) => a.href).filter((u) => /^https?:/.test(u)),
+    });
+    return r.result || [];
+  }
+}
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   try {
     if (info.menuItemId === 'freedm-link' && info.linkUrl) {
-      await sendToFreeDM({
+      await requestDownload({
         url: info.linkUrl, pageUrl: info.pageUrl, referer: info.pageUrl,
       });
     } else if (info.menuItemId === 'freedm-page') {
@@ -251,7 +376,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       // players (YouTube…) → media pipeline on the page URL.
       const src = info.srcUrl || '';
       if (/^https?:/.test(src)) {
-        await sendToFreeDM({
+        await requestDownload({
           url: src, pageUrl: info.pageUrl, referer: info.pageUrl,
         });
       } else {
@@ -274,7 +399,28 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         },
       });
       for (const url of r.result || []) {
-        await sendToFreeDM({ url, pageUrl: info.pageUrl, referer: info.pageUrl });
+        await requestDownload({
+          url, pageUrl: info.pageUrl, referer: info.pageUrl,
+        });
+      }
+    } else if (info.menuItemId === 'freedm-all' && tab) {
+      const s = await getSettings();
+      const all = await collectPageLinks(tab.id);
+      const urls = [...new Set(all)]
+          .filter((u) => looksLikeFile(u) && passesFilter(u, s))
+          .slice(0, 200); // bulk cap — a page can carry thousands
+      if (!urls.length) {
+        notify('jjamIDM', '이 페이지에서 다운로드할 파일 링크가 없습니다.');
+        return;
+      }
+      notify('jjamIDM — 전체 링크 다운로드',
+          `${urls.length}개 파일을 대기열에 추가합니다.`);
+      for (const url of urls) {
+        sendToFreeDM({
+          url, pageUrl: info.pageUrl, referer: info.pageUrl,
+          maxConnections: s.maxConnections,
+          subdir: subdirFor(url, null, s),
+        }).catch((e) => console.warn('bulk enqueue failed', url, e));
       }
     }
   } catch (e) {
@@ -283,14 +429,54 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
-// ---- messages from the popup ------------------------------------------
+// ---- messages: popup, dialog, content script -------------------------
 chrome.runtime.onMessage.addListener((m, _s, send) => {
   (async () => {
     if (m.cmd === 'ping') send(await call('ping'));
-    else if (m.cmd === 'pause' || m.cmd === 'resume' || m.cmd === 'cancel') {
+    else if (['pause', 'resume', 'cancel', 'start'].includes(m.cmd)) {
       send(await call(m.cmd, { taskId: m.taskId }));
     } else if (m.cmd === 'status') {
       send(await call('status', { taskId: m.taskId }));
+    // -- start-dialog round trip --
+    } else if (m.cmd === 'dialogGet') {
+      send(pendingDialog.get(m.token) || { error: 'expired' });
+    } else if (m.cmd === 'dialogDone') {
+      const req = pendingDialog.get(m.token);
+      pendingDialog.delete(m.token);
+      if (!req) return send({ error: 'expired' });
+      try {
+        const id = await sendToFreeDM({
+          ...req,
+          filename: m.filename || req.filename,
+          subdir: m.subdir,
+          maxConnections: m.maxConnections,
+          startNow: m.startNow,
+        });
+        if (id) {
+          boundedPut(tasks, id,
+              { taskId: id, type: 'progress', receivedBytes: 0 }, TASK_CAP);
+        }
+        send({ ok: true });
+      } catch (e) { send({ error: String(e) }); }
+    } else if (m.cmd === 'dialogCancel') {
+      const req = pendingDialog.get(m.token);
+      pendingDialog.delete(m.token);
+      // A cancelled capture shouldn't lose the file — let the
+      // browser take it (captureFailed stops the re-capture loop).
+      if (req?.url) {
+        boundedAdd(captureFailed, req.url, SET_CAP);
+        chrome.downloads.download({ url: req.url }).catch(() => {});
+      }
+      send({ ok: true });
+    // -- floating video chip --
+    } else if (m.type === 'jjamidm-video') {
+      if (/^https?:/.test(m.srcUrl || '')) {
+        send(await requestDownload({
+          url: m.srcUrl, pageUrl: m.pageUrl, referer: m.pageUrl,
+        }));
+      } else {
+        send(await sendMediaToFreeDM(m.pageUrl));
+      }
     }
   })().catch((e) => send({ ok: false, error: String(e) }));
   return true; // async response

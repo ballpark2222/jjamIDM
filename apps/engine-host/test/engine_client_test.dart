@@ -73,6 +73,76 @@ void main() {
     }
   });
 
+  /// Locate the engine-host entry point the same way setUp does.
+  Future<String> hostMainPath() async {
+    final sep = Platform.pathSeparator;
+    var dir = Directory.current;
+    for (var i = 0; i < 8; i++) {
+      for (final rel in [
+        'apps${sep}engine-host${sep}bin${sep}main.dart',
+        'bin${sep}main.dart'
+      ]) {
+        final f = File('${dir.path}$sep$rel');
+        if (f.existsSync() && f.path.contains('engine-host')) {
+          return f.path;
+        }
+        if (f.existsSync() &&
+            File('${dir.path}${sep}pubspec.yaml')
+                .readAsStringSync()
+                .contains('freedm_engine_host')) {
+          return f.path;
+        }
+      }
+      dir = dir.parent;
+    }
+    throw StateError('engine-host bin/main.dart not found');
+  }
+
+  test('queue mode: create parks, start dispatches through the '
+      'scheduler', () async {
+    final temp = await Directory.systemTemp.createTemp('ehc-q-t');
+    final queue = await Directory.systemTemp.createTemp('ehc-q');
+    final q = await EngineHostClient.spawn([
+      Platform.resolvedExecutable,
+      await hostMainPath(),
+      '--temp-root',
+      temp.path,
+      '--queue',
+      queue.path,
+      '--max-concurrent',
+      '2',
+    ]);
+    try {
+      const id = TaskId('q-1');
+      final req = DownloadRequest(
+        source: DownloadSource(initialUrl: '${fixture.base}/file-range'),
+        output: OutputSpec(targetDirectory: outDir.path),
+      );
+      await q.create(id, req);
+      // Parked: known to the host, but not started.
+      var st = await q.status(id);
+      expect(st['known'], isTrue);
+      expect(st['status'], 'created');
+
+      final done = Completer<Map<String, Object?>>();
+      final sub = q.events(id).listen((e) {
+        if (e is EngineCompleted && !done.isCompleted) {
+          done.complete({'path': e.outputPath});
+        }
+      });
+      await q.start(id);
+      final doneRes = await done.future
+          .timeout(const Duration(seconds: 60));
+      expect(File(doneRes['path'] as String).existsSync(), isTrue);
+      // Scheduler-mediated completion persists a terminal record.
+      st = await q.status(id);
+      expect(st['status'], 'completed');
+      await sub.cancel();
+    } finally {
+      await q.shutdown();
+    }
+  });
+
   test('hello negotiates protocol v1 + capabilities', () async {
     final caps = await client.capabilities();
     expect(caps.segmentedDownload, isTrue);

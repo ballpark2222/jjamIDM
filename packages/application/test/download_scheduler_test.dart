@@ -156,6 +156,22 @@ void main() {
     return t;
   }
 
+  test('autoStart:false parks the task; start() admits it', () async {
+    final e = FakeEngine(autoComplete: true);
+    final s = sched(e);
+    final t = await s.enqueue(req(), autoStart: false);
+    // Held: no probe, no engine call — but persisted to the repo.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(s.task(t.id)!.status, DownloadStatus.created);
+    expect(e.created, isEmpty);
+    await s.start(t.id);
+    final done = await until(s, t.id,
+        (x) => x.status == DownloadStatus.completed);
+    expect(done.status, DownloadStatus.completed);
+    expect(e.started, contains(t.id.value));
+    await s.dispose();
+  });
+
   test('concurrency cap: only N dispatched at once', () async {
     final e = FakeEngine();
     final s = sched(e, maxConcurrent: 2);

@@ -34,6 +34,11 @@ final class EngineProtocol {
   static const String mediaProbe = 'media.probe';
   static const String mediaEnqueue = 'media.enqueue';
   static const String mediaCancel = 'media.cancel';
+  // v2 additive (ADR-0006): pause/resume for media tasks. Engine
+  // steps pause via the engine; component (yt-dlp) steps stop and
+  // resume from their .part artifacts on resume.
+  static const String mediaPause = 'media.pause';
+  static const String mediaResume = 'media.resume';
 
   // server → client notifications
   static const String taskEvent = 'task.event';

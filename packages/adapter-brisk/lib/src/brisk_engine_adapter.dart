@@ -318,6 +318,11 @@ final class BriskEngineAdapter implements DownloadEngine {
 
   EngineProgress? lastProgress(TaskId id) => _tasks[id.value]?.lastProgress;
 
+  /// Whether the engine currently tracks [id] — events() returns an
+  /// empty stream before create() runs, so queue-mode subscribers
+  /// poll this before attaching.
+  bool isKnown(TaskId id) => _tasks.containsKey(id.value);
+
   // ------------------------------------------------------------------
 
   Map<String, String> _mergedHeaders(DownloadRequest request) {

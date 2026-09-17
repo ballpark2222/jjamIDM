@@ -13,6 +13,25 @@ import 'package:freedm_media_api/freedm_media_api.dart';
 /// Runs alongside [DownloadScheduler]: the coordinator owns the task
 /// while a plan executes; file-pipeline queueing still belongs to the
 /// scheduler. All transitions go through [TaskStateMachine].
+/// In-flight run state for a media task — survives pause/resume so
+/// a resumed task continues from the next unfinished plan step.
+final class _MediaRun {
+  _MediaRun(this.sel, this.workDir);
+  final MediaSelection sel;
+  final String workDir;
+  MediaPlan? plan;
+  var stepIndex = 0;
+  final produced = <String>[];
+  final subtitles = <String>[];
+  var pauseRequested = false;
+  CancellationToken? stepCancel;
+  var engineStepActive = false;
+}
+
+/// Thrown by a step when its pause/cancel sentinel fires — _run
+/// turns it into the `paused` state instead of a failure.
+final class _MediaPaused implements Exception {}
+
 final class MediaDownloadCoordinator {
   MediaDownloadCoordinator({
     required DownloadEngine engine,
@@ -40,6 +59,7 @@ final class MediaDownloadCoordinator {
   final _sm = const TaskStateMachine();
 
   final _tasks = <String, DownloadTask>{};
+  final _runs = <String, _MediaRun>{};
   final _changes = StreamController<DownloadTask>.broadcast();
 
   /// Task updates for UI.
@@ -75,81 +95,151 @@ final class MediaDownloadCoordinator {
       providerId: _resolver.providerId,
     );
     _tasks[task.id.value] = task;
+    _runs[task.id.value] = _MediaRun(selection, workDir);
     await _repo.upsert(task);
     _bus.publish(DownloadCreated(task.id, now));
-    unawaited(_run(task, selection, workDir));
+    unawaited(_run(task));
     return task;
   }
 
   Future<void> cancel(TaskId id) async {
     final t = _tasks[id.value];
     if (t == null || t.status.isTerminal) return;
-    if (t.status.isActive) await _engine.cancel(id);
+    final run = _runs[id.value];
+    if (t.status.isActive) {
+      await _engine.cancel(id);
+      run?.stepCancel?.cancel();
+    }
     _apply(t, DownloadStatus.cancelled);
+    _runs.remove(id.value);
+  }
+
+  /// Pause a media task. Only download steps are pausable — a pause
+  /// requested during resolve/mux lands at the next step boundary.
+  /// Engine steps pause in place; component steps kill the yt-dlp
+  /// process and resume from its `.part` artifacts on [resume].
+  Future<void> pause(TaskId id) async {
+    final t = _tasks[id.value];
+    final run = _runs[id.value];
+    if (t == null || run == null || t.status.isTerminal) return;
+    run.pauseRequested = true;
+    if (t.status == DownloadStatus.downloadingVideo ||
+        t.status == DownloadStatus.downloadingAudio) {
+      if (run.engineStepActive) await _engine.pause(id);
+      run.stepCancel?.cancel();
+    }
+  }
+
+  /// Resume a paused media task — continues the plan at the step it
+  /// stopped on. yt-dlp component steps re-invoke with identical
+  /// arguments and pick up from `.part` files in workDir.
+  Future<void> resume(TaskId id) async {
+    final t = _tasks[id.value];
+    final run = _runs[id.value];
+    if (t == null || run == null) {
+      throw StateError('unknown task ${id.value}');
+    }
+    if (t.status != DownloadStatus.paused) return;
+    run.pauseRequested = false;
+    final resumed = _apply(t, DownloadStatus.downloadingVideo);
+    _bus.publish(DownloadResumed(id, _clock().toUtc()));
+    unawaited(_runSteps(resumed, run));
+  }
+
+  /// Mark interrupted media tasks after a host restart — run state
+  /// lives in memory so an in-flight pipeline can't resume; engine
+  /// temp segments still allow a future retry to redownload cleanly.
+  Future<void> recover() async {
+    for (final t in await _repo.listActive()) {
+      if (t.status.isTerminal) continue;
+      _tasks[t.id.value] = t;
+      try {
+        _apply(t, DownloadStatus.failed,
+            lastError: ErrorCode.engineUnavailable);
+      } on InvalidTransitionError {
+        _apply(t, DownloadStatus.cancelled);
+      }
+    }
   }
 
   Future<void> dispose() => _changes.close();
 
   // ------------------------------------------------------------------
 
-  Future<void> _run(
-      DownloadTask task, MediaSelection sel, String workDir) async {
-    await Directory(workDir).create(recursive: true);
+  Future<void> _run(DownloadTask task) async {
+    final run = _runs[task.id.value]!;
+    await Directory(run.workDir).create(recursive: true);
     try {
       task = _apply(task, DownloadStatus.resolvingMedia);
-      final plan = await _resolver.plan(sel, headers: sel.headers);
+      run.plan = await _resolver.plan(run.sel, headers: run.sel.headers);
       // ready is the gate state between resolution and downloads.
       task = _apply(task, DownloadStatus.ready);
-      final produced = <String>[]; // artifact paths, in plan order
-      final subtitles = <String>[];
+      await _runSteps(task, run);
+    } on _MediaPaused {
+      _parkPaused(task);
+    } catch (e) {
+      final cur = _tasks[task.id.value] ?? task;
+      if (!cur.status.isTerminal) {
+        _fail(cur, ErrorCode.unknown, '$e');
+      }
+    }
+  }
 
-      for (final step in plan.steps) {
+  /// Step loop — shared by the first run and every resume. Steps
+  /// already produced are skipped via [run.stepIndex].
+  Future<void> _runSteps(DownloadTask task, _MediaRun run) async {
+    try {
+      final sel = run.sel;
+      final plan = run.plan!;
+      for (; run.stepIndex < plan.steps.length; run.stepIndex++) {
         task = _tasks[task.id.value] ?? task;
         if (task.status.isTerminal) return;
+        if (run.pauseRequested) throw _MediaPaused();
+        final step = plan.steps[run.stepIndex];
         switch (step) {
           case EngineDownloadStep():
-            final path = await _engineStep(task, step, workDir);
+            final path = await _engineStep(task, step, run);
             task = _tasks[task.id.value]!;
             if (step.role == 'subtitle') {
-              subtitles.add(path);
+              run.subtitles.add(path);
             } else {
-              produced.add(path);
+              run.produced.add(path);
             }
           case ComponentDownloadStep():
-            final path = await _componentStep(task, step, workDir, sel);
+            final path = await _componentStep(task, step, run);
             task = _tasks[task.id.value]!;
-            produced.add(path);
+            run.produced.add(path);
           case MuxStep():
             task = _to(task, DownloadStatus.muxing);
-            final r = await _muxer.mux(step, workDir: workDir);
+            final r = await _muxer.mux(step, workDir: run.workDir);
             if (!r.ok) {
               _fail(task, ErrorCode.unknown, r.error ?? 'mux failed');
               return;
             }
             task = _tasks[task.id.value]!;
-            if (r.outputPath != null) produced.add(r.outputPath!);
+            if (r.outputPath != null) run.produced.add(r.outputPath!);
         }
       }
 
       // Subtitle stage — attach selected langs as files.
-      if (sel.subtitleLangs.isNotEmpty && produced.isNotEmpty) {
+      if (sel.subtitleLangs.isNotEmpty && run.produced.isNotEmpty) {
         task = _to(task, DownloadStatus.subtitleProcessing);
-        final video = produced.last;
-        final r = await _muxer.attachSubtitles(video, subtitles);
+        final video = run.produced.last;
+        final r = await _muxer.attachSubtitles(video, run.subtitles);
         if (!r.ok) {
           _fail(task, ErrorCode.unknown, r.error ?? 'subtitle failed');
           return;
         }
-        if (r.outputPath != null) produced.add(r.outputPath!);
+        if (r.outputPath != null) run.produced.add(r.outputPath!);
         task = _tasks[task.id.value]!;
       }
 
       // Deliver the final artifact to the user's target directory.
       String? delivered;
-      if (produced.isNotEmpty) {
+      if (run.produced.isNotEmpty) {
         await Directory(task.output.targetDirectory)
             .create(recursive: true);
-        final src = produced.last;
+        final src = run.produced.last;
         var name = plan.finalFileName;
         if (!name.contains('.')) {
           final dot = src.lastIndexOf('.');
@@ -170,15 +260,27 @@ final class MediaDownloadCoordinator {
 
       task = _to(task, DownloadStatus.verifying);
       _apply(task, DownloadStatus.completed);
+      _runs.remove(task.id.value);
       _bus.publish(DownloadCompleted(task.id, _clock().toUtc(),
           outputPath: delivered ??
-              (produced.isEmpty ? null : produced.last)));
+              (run.produced.isEmpty ? null : run.produced.last)));
+    } on _MediaPaused {
+      _parkPaused(task);
     } catch (e) {
       final cur = _tasks[task.id.value] ?? task;
       if (!cur.status.isTerminal) {
         _fail(cur, ErrorCode.unknown, '$e');
       }
     }
+  }
+
+  /// pausing → paused with the run record retained for resume().
+  void _parkPaused(DownloadTask task) {
+    var cur = _tasks[task.id.value] ?? task;
+    if (cur.status.isTerminal) return;
+    cur = _to(cur, DownloadStatus.pausing);
+    cur = _apply(cur, DownloadStatus.paused);
+    _bus.publish(DownloadPaused(cur.id, _clock().toUtc()));
   }
 
   /// Normalize to [to]: skips self-transitions and routes through
@@ -192,15 +294,15 @@ final class MediaDownloadCoordinator {
     return t.status == to ? t : _apply(t, to);
   }
 
-  Future<String> _engineStep(
-      DownloadTask task, EngineDownloadStep step, String workDir) async {
+  Future<String> _engineStep(DownloadTask task,
+      EngineDownloadStep step, _MediaRun run) async {
     task = _to(task, step.role == 'audio'
         ? DownloadStatus.downloadingAudio
         : DownloadStatus.downloadingVideo);
     final req = DownloadRequest(
       source: DownloadSource(initialUrl: step.url),
       output: OutputSpec(
-          targetDirectory: workDir, fileName: step.outputFileName),
+          targetDirectory: run.workDir, fileName: step.outputFileName),
       headers: step.headers,
     );
     await _engine.create(task.id, req);
@@ -208,23 +310,28 @@ final class MediaDownloadCoordinator {
     final sub = _engine.events(task.id).listen((e) {
       if (e is EngineCompleted && !done.isCompleted) {
         done.complete(e.outputPath ??
-            '$workDir${Platform.pathSeparator}${step.outputFileName}');
+            '${run.workDir}${Platform.pathSeparator}'
+                '${step.outputFileName}');
+      }
+      if (e is EnginePaused && !done.isCompleted) {
+        done.completeError(_MediaPaused());
       }
       if (e is EngineFailed && !done.isCompleted) {
         done.completeError(StateError(e.detail ?? e.error.name));
       }
     });
+    run.engineStepActive = true;
     await _engine.start(task.id);
     try {
       return await done.future;
     } finally {
+      run.engineStepActive = false;
       await sub.cancel();
     }
   }
 
   Future<String> _componentStep(DownloadTask task,
-      ComponentDownloadStep step, String workDir,
-      MediaSelection sel) async {
+      ComponentDownloadStep step, _MediaRun run) async {
     task = _to(task, DownloadStatus.downloadingVideo);
     final dl = _downloaders[step.componentId];
     if (dl == null) {
@@ -232,13 +339,18 @@ final class MediaDownloadCoordinator {
           'no downloader registered for ${step.componentId}');
     }
     final path =
-        '$workDir${Platform.pathSeparator}${step.outputFileName}';
+        '${run.workDir}${Platform.pathSeparator}${step.outputFileName}';
+    final token = CancellationToken();
+    run.stepCancel = token;
     final code = await dl.download(
-        pageUrl: sel.pageUrl,
+        pageUrl: run.sel.pageUrl,
         outputPath: path,
         formatId: step.formatId,
-        headers: sel.headers,
-        subtitleLangs: sel.subtitleLangs);
+        headers: run.sel.headers,
+        subtitleLangs: run.sel.subtitleLangs,
+        cancel: token);
+    run.stepCancel = null;
+    if (code == cancelledExitCode) throw _MediaPaused();
     if (code != 0) {
       throw StateError('${step.componentId} exited $code');
     }

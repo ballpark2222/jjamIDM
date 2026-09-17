@@ -1,8 +1,9 @@
 # jjamIDM one-shot installer (dev/RC channel).
 #   1. Writes the native-messaging host manifest pointing at the
 #      packaged jjamidm_native_host.exe.
-#   2. Writes %APPDATA%\FreeDM\native-host.json (engine command,
-#      download dir) — the host cold-launches jjamidm-engine-host.exe.
+#   2. Writes %APPDATA%\jjamIDM\native-host.json (engine command,
+#      download dir, queue settings) — the host cold-launches
+#      jjamidm-engine-host.exe in queue mode (scheduler-backed).
 #   3. Registers the host for Chrome + Edge under HKCU (no admin).
 #
 # The browser extension carries a fixed `key`, so its ID is
@@ -24,8 +25,8 @@ $engineExe = "$RcDir\desktop\jjamidm-engine-host.exe"
 foreach ($f in @($hostExe, $engineExe)) {
   if (-not (Test-Path $f)) { throw "missing artifact: $f (run package.ps1 first)" }
 }
-# Host reads %APPDATA%\FreeDM\native-host.json; engine/desktop data
-# lives under %LOCALAPPDATA%\FreeDM.
+# Host reads %APPDATA%\jjamIDM\native-host.json; engine/desktop data
+# lives under %LOCALAPPDATA%\jjamIDM.
 $configDir = "$env:APPDATA\jjamIDM"
 $dataDir = "$env:LOCALAPPDATA\jjamIDM"
 
@@ -57,6 +58,10 @@ $config = [ordered]@{
   )
   engineCwd = "$RcDir\desktop"
   downloadDir = $DownloadDir
+  # Browser engine runs in queue mode: concurrent downloads cap +
+  # persistent queue (dir defaults to <configDir>\queue).
+  maxConcurrent = 3
+  queueDir = "$configDir\queue"
 }
 $configPath = "$configDir\native-host.json"
 [IO.File]::WriteAllText($configPath,
