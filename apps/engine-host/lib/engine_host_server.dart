@@ -346,13 +346,18 @@ final class EngineHostServer {
         // loses the race against this status record.
         String? outPath;
         if (t.status == DownloadStatus.completed) {
-          final name = t.output.fileName ??
-              (t.source.finalUrl ?? t.source.initialUrl)
-                  .split('/')
-                  .last;
-          if (name.isNotEmpty) {
-            outPath = '${t.output.targetDirectory}'
-                '${Platform.pathSeparator}$name';
+          // The scheduler records the engine's real path; fall back
+          // to a guess only for tasks completed before that existed.
+          outPath = t.metadata['outputPath'];
+          if (outPath == null) {
+            final name = t.output.fileName ??
+                (t.source.finalUrl ?? t.source.initialUrl)
+                    .split('/')
+                    .last;
+            if (name.isNotEmpty) {
+              outPath = '${t.output.targetDirectory}'
+                  '${Platform.pathSeparator}$name';
+            }
           }
         }
         _send(RpcNotification(

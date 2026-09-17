@@ -264,9 +264,20 @@ final class BriskEngineAdapter implements DownloadEngine {
       connectionRetryTimeoutMillis: _retryTimeout,
       maxConnectionRetryCount: _maxRetries,
     );
-    _tasks[uid] = _BriskTask(item, settings, filePath, taskTemp);
+    final task = _BriskTask(item, settings, filePath, taskTemp);
+    _tasks[uid] = task;
+    // A pause issued while create() was in flight lands here —
+    // applied on start() like a pre-start pause.
+    if (_preCreatePauses.remove(uid)) task.wantPause = true;
     return EngineTaskHandle(engineTaskId: uid);
   }
+
+  /// Pauses requested before create() finished — the scheduler flips
+  /// a task to `downloading` before engine.create returns, so pause
+  /// can arrive while the task doesn't exist here yet. Queued and
+  /// consumed by create() instead of throwing (a throw would wedge
+  /// the scheduler task in `pausing`).
+  final _preCreatePauses = <String>{};
 
   @override
   Future<void> start(TaskId id) async {
@@ -278,6 +289,15 @@ final class BriskEngineAdapter implements DownloadEngine {
       onButtonAvailability: (_) {},
       onDownloadProgress: (msg) => _onProgress(id.value, msg),
     );
+    if (!_tasks.containsKey(id.value)) {
+      // cancel() ran while start was in flight and already emitted
+      // the synthesized terminal event — stop the just-started
+      // engine task so it doesn't run as an untracked zombie.
+      try {
+        brisk.DownloadEngine.cancel(id.value);
+      } catch (_) {}
+      return;
+    }
     t.started = true;
     if (t.wantPause) {
       t.wantPause = false;
@@ -288,7 +308,10 @@ final class BriskEngineAdapter implements DownloadEngine {
   @override
   Future<void> pause(TaskId id) async {
     final t = _tasks[id.value];
-    if (t == null) throw StateError('unknown task ${id.value}');
+    if (t == null) {
+      _preCreatePauses.add(id.value);
+      return;
+    }
     if (!t.started) {
       t.wantPause = true;
       return;
@@ -299,7 +322,11 @@ final class BriskEngineAdapter implements DownloadEngine {
   @override
   Future<void> resume(TaskId id) async {
     final t = _tasks[id.value];
-    if (t == null) throw StateError('unknown task ${id.value}');
+    if (t == null) {
+      // A resume that beats create() cancels a queued pause.
+      _preCreatePauses.remove(id.value);
+      return;
+    }
     if (!t.started) {
       t.wantPause = false;
       return;
@@ -310,6 +337,7 @@ final class BriskEngineAdapter implements DownloadEngine {
   @override
   Future<void> cancel(TaskId id) async {
     final t = _tasks[id.value];
+    _preCreatePauses.remove(id.value);
     if (t == null) return;
     if (!t.started) {
       // Never reached the engine — synthesize the terminal event

@@ -99,6 +99,17 @@ final class FakeEngine implements DownloadEngine {
   void emit(TaskId id, EngineEvent e) => controllers[id.value]!.add(e);
 }
 
+/// start() blocks on a gate — models the isolate-spawn await in the
+/// real adapter, opening the cancel-during-start window.
+final class GatedStartEngine extends FakeEngine {
+  final startGate = Completer<void>();
+  @override
+  Future<void> start(TaskId id) async {
+    started.add(id.value);
+    await startGate.future;
+  }
+}
+
 void main() {
   late Directory dir;
   late JsonTaskRepository repo;
@@ -221,6 +232,33 @@ void main() {
     await s.cancel(t.id);
     await until(s, t.id, (x) => x.status == DownloadStatus.cancelled);
     expect(e.cancelled, contains(t.id.value));
+    await s.dispose();
+  });
+
+  test('cancel during engine start stops the just-started task',
+      () async {
+    final e = GatedStartEngine();
+    final s = sched(e);
+    final t = await s.enqueue(req());
+    await until(s, t.id, (x) => x.status == DownloadStatus.downloading);
+    for (var i = 0; i < 100 && e.started.isEmpty; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(e.started, contains(t.id.value));
+
+    // Cancel while engine.start is still in flight → terminal…
+    await s.cancel(t.id);
+    await until(s, t.id, (x) => x.status == DownloadStatus.cancelled);
+
+    // …then release the start — the post-start guard must cancel the
+    // just-started engine task instead of leaving an untracked
+    // download running (zombie).
+    e.startGate.complete();
+    for (var i = 0; i < 100 && e.cancelled.length < 2; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(e.cancelled.where((id) => id == t.id.value).length, 2,
+        reason: 'user cancel + post-start guard cancel expected');
     await s.dispose();
   });
 

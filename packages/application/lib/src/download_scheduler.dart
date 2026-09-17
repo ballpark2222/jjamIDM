@@ -329,6 +329,18 @@ final class DownloadScheduler {
       await _engine.create(running.id, await _requestFor(running));
       _subscribe(running.id);
       await _engine.start(running.id);
+      // A cancel that landed during create/start already marked the
+      // task terminal — don't publish Started on it, and make sure
+      // the just-started engine task is stopped (adapter covers the
+      // in-flight case, but an engine without that guard would leak
+      // an untracked download).
+      final cur = _tasks[running.id.value];
+      if (cur == null || cur.status.isTerminal) {
+        try {
+          await _engine.cancel(running.id);
+        } catch (_) {}
+        return;
+      }
       _bus.publish(DownloadStarted(running.id, _clock().toUtc()));
     } catch (e) {
       _fail(running, ErrorCode.engineUnavailable, '$e');
@@ -342,6 +354,12 @@ final class DownloadScheduler {
       await _engine.create(task.id, await _requestFor(task));
       _subscribe(task.id);
       await _engine.start(task.id);
+      final cur = _tasks[task.id.value];
+      if (cur == null || cur.status.isTerminal) {
+        try {
+          await _engine.cancel(task.id);
+        } catch (_) {}
+      }
     } catch (e) {
       _fail(task, ErrorCode.engineUnavailable, '$e');
     }
@@ -433,6 +451,14 @@ final class DownloadScheduler {
             'checksum mismatch on ${e.outputPath}');
         return;
       }
+    }
+    // Persist the real engine-side path — queue-mode subscribers may
+    // never see the raw EngineCompleted (the adapter drops its task
+    // entry on terminal events, so a late isKnown check stays false).
+    if (e.outputPath != null) {
+      t = t.copyWith(
+          metadata: {...t.metadata, 'outputPath': e.outputPath!});
+      _tasks[t.id.value] = t;
     }
     _apply(t, DownloadStatus.completed,
         receivedBytes: t.totalBytes ?? t.receivedBytes);

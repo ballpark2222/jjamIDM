@@ -104,7 +104,24 @@ final class EngineHostClient implements DownloadEngine {
           }
         }
       }
-    });
+    }, onDone: _hostGone, onError: (_, __) => _hostGone());
+  }
+
+  /// The engine-host process exited or its stdout broke — fail every
+  /// in-flight call (they would hang forever otherwise) and close
+  /// per-task event streams so subscribers see a clean end.
+  void _hostGone() {
+    for (final c in _pending.values) {
+      if (!c.isCompleted) {
+        c.completeError(StateError('engine host exited'));
+      }
+    }
+    _pending.clear();
+    for (final c in _taskEvents.values) {
+      unawaited(c.close());
+    }
+    _taskEvents.clear();
+    _known.clear();
   }
 
   Future<Map<String, Object?>> _call(String method,

@@ -214,6 +214,31 @@ void main() {
         await expectedHash(FixtureServer.defaultLength));
   });
 
+  test('pause issued before create applies on start',
+      timeout: const Timeout(Duration(minutes: 3)), () async {
+    // The scheduler flips a task to `downloading` before
+    // engine.create returns — a pause in that window must queue and
+    // land the moment the task starts, not throw or vanish.
+    final engine = newEngine();
+    const id = TaskId('dl-pre-pause');
+    await engine.pause(id); // before create — queues internally
+    await engine.create(id, req('/file-slow?length=4194304&delay=40'));
+    final paused = Completer<void>();
+    final done = Completer<EngineEvent>();
+    engine.events(id).listen((e) async {
+      if (e is EnginePaused && !paused.isCompleted) {
+        paused.complete();
+        await engine.resume(id);
+      }
+      if (e is EngineCompleted || e is EngineFailed) done.complete(e);
+    });
+    await engine.start(id);
+    await paused.future.timeout(const Duration(minutes: 2));
+    final e = await done.future.timeout(const Duration(minutes: 2));
+    expect(e, isA<EngineCompleted>(),
+        reason: (e is EngineFailed) ? '${e.detail}' : '');
+  });
+
   test('cancel aborts download', () async {
     final engine = newEngine();
     const id = TaskId('dl-cancel');

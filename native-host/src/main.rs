@@ -342,6 +342,53 @@ impl EngineClient {
     }
 }
 
+impl Drop for EngineClient {
+    /// The host owns the engine's lifecycle: ask it to exit cleanly
+    /// (flushes queue persistence), then force-kill whatever is left.
+    /// An orphaned engine-host would keep writing to shared segment
+    /// temp files while the next host's recovery restarts the same
+    /// tasks — a double-writer corruption window.
+    fn drop(&mut self) {
+        let bye = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"engine.shutdown\",\"params\":{}}\n";
+        if self
+            .stdin
+            .write_all(bye.as_bytes())
+            .and_then(|_| self.stdin.flush())
+            .is_ok()
+        {
+            for _ in 0..40 {
+                match self._child.try_wait() {
+                    Ok(Some(_)) => return,
+                    _ => thread::sleep(std::time::Duration::from_millis(50)),
+                }
+            }
+        }
+        let _ = self._child.kill();
+        let _ = self._child.wait();
+    }
+}
+
+/// Call through the cached engine. Transport-level failures (write
+/// error, timeout, closed channel) mean the child is dead or wedged —
+/// drop it so the next command respawns instead of reusing a corpse.
+/// RPC-level errors ("engine error N: …") leave the engine in place.
+fn engine_call(
+    engine: &mut Option<EngineClient>,
+    method: &str,
+    params: Map<String, Value>,
+) -> Result<Value, String> {
+    let e = engine.as_mut().ok_or("engine not running")?;
+    match e.call(method, params) {
+        Ok(v) => Ok(v),
+        Err(err) => {
+            if !err.starts_with("engine error") {
+                *engine = None;
+            }
+            Err(err)
+        }
+    }
+}
+
 // --------------------------------------------------------------------
 // Command handlers
 // --------------------------------------------------------------------
@@ -394,7 +441,7 @@ fn handle(
     match msg.command.as_str() {
         "ping" => {
             let engine_ok = match engine {
-                Some(e) => e.call("engine.hello", Map::new()).is_ok(),
+                Some(_) => engine_call(engine, "engine.hello", Map::new()).is_ok(),
                 None => match spawn_engine(cfg) {
                     Ok(mut e) => {
                         let ok = e.call("engine.hello", Map::new()).is_ok();
@@ -426,7 +473,6 @@ fn handle(
             if engine.is_none() {
                 *engine = Some(spawn_engine(cfg)?);
             }
-            let e = engine.as_mut().unwrap();
 
             let task_id = format!("{:x}", std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -472,19 +518,19 @@ fn handle(
             if let Some(pr) = p.get("priority").and_then(|v| v.as_i64()) {
                 params.insert("priority".into(), json!(pr));
             }
-            e.call("task.create", params)?;
+            engine_call(engine, "task.create", params)?;
             // Subscribe BEFORE start — a small file can finish in
             // the gap and its terminal event would be lost.
             let mut sub = Map::new();
             sub.insert("taskId".into(), json!(task_id));
-            e.call("task.subscribeEvents", sub)?;
+            engine_call(engine, "task.subscribeEvents", sub)?;
             // start:false parks the task in the scheduler queue —
             // a later `start` command admits it.
             let start = p.get("start").and_then(|v| v.as_bool()).unwrap_or(true);
             if start {
                 let mut sp = Map::new();
                 sp.insert("taskId".into(), json!(task_id));
-                e.call("task.start", sp)?;
+                engine_call(engine, "task.start", sp)?;
             }
             Ok(json!({"taskId": task_id}))
         }
@@ -502,7 +548,6 @@ fn handle(
             if engine.is_none() {
                 *engine = Some(spawn_engine(cfg)?);
             }
-            let e = engine.as_mut().unwrap();
             let mut params = Map::new();
             params.insert("pageUrl".into(), json!(url));
             if !headers.is_empty() {
@@ -516,7 +561,7 @@ fn handle(
                         .unwrap_or_else(|_| ".".into())
                 })),
             );
-            let r = e.call("media.enqueue", params)?;
+            let r = engine_call(engine, "media.enqueue", params)?;
             Ok(json!({
                 "taskId": r.get("taskId").cloned().unwrap_or(Value::Null),
             }))
@@ -529,21 +574,26 @@ fn handle(
             if engine.is_none() {
                 *engine = Some(spawn_engine(cfg)?);
             }
-            let e = engine.as_mut().unwrap();
             let method = format!("task.{}", msg.command);
             let mut p = Map::new();
             p.insert("taskId".into(), json!(id));
-            match e.call(&method, p.clone()) {
-                Ok(v) => Ok(v),
-                // media tasks live in the coordinator — task.* does
-                // not know them; fall back to media.<cmd>.
+            match engine_call(engine, &method, p) {
+                Ok(v) => v,
                 Err(err) => {
+                    // media tasks live in the coordinator — task.*
+                    // does not know them; fall back to media.<cmd>.
+                    // `start` has no media counterpart (media tasks
+                    // always run), and a transport failure already
+                    // dropped the engine — don't retry a dead pipe.
+                    if msg.command == "start" || engine.is_none() {
+                        return Err(err);
+                    }
                     let mut mp = Map::new();
                     mp.insert("taskId".into(), json!(id));
-                    e.call(&format!("media.{}", msg.command), mp)
-                        .map_err(|_| err)
+                    engine_call(engine, &format!("media.{}", msg.command), mp)
+                        .map_err(|_| err)?
                 }
-            }?;
+            };
             Ok(json!({"ok": true}))
         }
         "status" => {
@@ -551,10 +601,9 @@ fn handle(
             if engine.is_none() {
                 *engine = Some(spawn_engine(cfg)?);
             }
-            let e = engine.as_mut().unwrap();
             let mut p = Map::new();
             p.insert("taskId".into(), json!(id));
-            e.call("task.status", p)
+            engine_call(engine, "task.status", p)
         }
         "reveal" | "open" => {
             // Open/reveal a completed download in Explorer. The path
