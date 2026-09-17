@@ -30,6 +30,17 @@ final class _BriskTask {
   /// A pause requested before [started] — applied right after the
   /// engine task actually starts so the request isn't dropped.
   var wantPause = false;
+
+  /// Set when the engine reports a paused status — clears on
+  /// resume/start. Upstream drops pause commands that arrive before
+  /// connection channels exist, so [BriskEngineAdapter._pauseUntilAcked]
+  /// re-sends until this flag flips.
+  var pauseAcked = false;
+
+  /// Bumped on every pause/resume/cancel — a [_pauseUntilAcked] loop
+  /// still running from an older pause must stop re-sending, or it
+  /// would re-pause a download the user just resumed.
+  var pauseEpoch = 0;
 }
 
 /// DownloadEngine implementation over the vendored Brisk engine.
@@ -291,17 +302,44 @@ final class BriskEngineAdapter implements DownloadEngine {
     );
     if (!_tasks.containsKey(id.value)) {
       // cancel() ran while start was in flight and already emitted
-      // the synthesized terminal event — stop the just-started
-      // engine task so it doesn't run as an untracked zombie.
-      try {
-        brisk.DownloadEngine.cancel(id.value);
-      } catch (_) {}
+      // the synthesized terminal event. Upstream rewrites commands
+      // that arrive before connection channels exist into a start —
+      // re-send cancel briefly so the just-started engine task
+      // actually stops instead of running as an untracked zombie.
+      for (var i = 0; i < 20; i++) {
+        try {
+          brisk.DownloadEngine.cancel(id.value);
+        } catch (_) {
+          break; // engine already dropped the uid
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
       return;
     }
     t.started = true;
+    t.pauseAcked = false;
     if (t.wantPause) {
       t.wantPause = false;
-      brisk.DownloadEngine.pause(id.value);
+      await _pauseUntilAcked(id, ++t.pauseEpoch);
+    }
+  }
+
+  /// Sends pause until the engine acknowledges it with a paused
+  /// status (bounded). Upstream drops — actually rewrites to a start
+  /// command — any pause that arrives before connection channels are
+  /// registered, which is exactly the post-start window. [epoch]
+  /// abandons the loop when a newer pause/resume/cancel supersedes
+  /// this request.
+  Future<void> _pauseUntilAcked(TaskId id, int epoch) async {
+    for (var i = 0; i < 20; i++) {
+      final t = _tasks[id.value];
+      if (t == null || t.pauseAcked || t.pauseEpoch != epoch) return;
+      try {
+        brisk.DownloadEngine.pause(id.value);
+      } catch (_) {
+        return; // engine forgot the uid — nothing left to pause
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 150));
     }
   }
 
@@ -316,7 +354,10 @@ final class BriskEngineAdapter implements DownloadEngine {
       t.wantPause = true;
       return;
     }
-    brisk.DownloadEngine.pause(id.value);
+    // A stale ack from a previous pause cycle must not satisfy this
+    // new request — clear it before the retry loop starts.
+    t.pauseAcked = false;
+    await _pauseUntilAcked(id, ++t.pauseEpoch);
   }
 
   @override
@@ -327,6 +368,8 @@ final class BriskEngineAdapter implements DownloadEngine {
       _preCreatePauses.remove(id.value);
       return;
     }
+    t.pauseAcked = false;
+    t.pauseEpoch++;
     if (!t.started) {
       t.wantPause = false;
       return;
@@ -338,6 +381,7 @@ final class BriskEngineAdapter implements DownloadEngine {
   Future<void> cancel(TaskId id) async {
     final t = _tasks[id.value];
     _preCreatePauses.remove(id.value);
+    if (t != null) t.pauseEpoch++;
     if (t == null) return;
     if (!t.started) {
       // Never reached the engine — synthesize the terminal event
@@ -444,6 +488,7 @@ final class BriskEngineAdapter implements DownloadEngine {
       return;
     }
     if (msg.paused || status == brisk.DownloadStatus.paused) {
+      t.pauseAcked = true;
       t.events.add(const EnginePaused());
       return;
     }

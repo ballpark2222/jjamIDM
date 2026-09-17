@@ -222,7 +222,10 @@ void main() {
     final engine = newEngine();
     const id = TaskId('dl-pre-pause');
     await engine.pause(id); // before create — queues internally
-    await engine.create(id, req('/file-slow?length=4194304&delay=40'));
+    // Slow 8 MiB file — the pause must land while connections are
+    // still running (a fast file could finish inside the retry
+    // window and never report paused).
+    await engine.create(id, req('/file-slow?length=8388608&delay=80'));
     final paused = Completer<void>();
     final done = Completer<EngineEvent>();
     engine.events(id).listen((e) async {

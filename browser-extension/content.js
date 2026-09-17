@@ -47,11 +47,22 @@
 
   const media = new Set(); // live <video>/<audio> elements
   function scan() {
+    // Drop detached elements too — the set would otherwise pin dead
+    // players forever on SPA pages.
+    for (const el of media) {
+      if (!el.isConnected) media.delete(el);
+    }
     document.querySelectorAll('video, audio').forEach((el) => media.add(el));
   }
   scan();
-  // Catch players created later (SPA nav, lazy mounts).
-  new MutationObserver(scan).observe(
+  // Catch players created later (SPA nav, lazy mounts). Mutations
+  // fire constantly on dynamic pages — debounce instead of running
+  // a full-document query per batch.
+  let scanTimer = null;
+  new MutationObserver(() => {
+    if (scanTimer) return;
+    scanTimer = setTimeout(() => { scanTimer = null; scan(); }, 400);
+  }).observe(
       document.documentElement, { childList: true, subtree: true });
 
   let lastMove = 0;
