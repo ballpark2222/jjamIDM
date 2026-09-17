@@ -1,0 +1,182 @@
+// FreeDM background service worker (MV3).
+// Captures browser downloads and forwards them to the native host
+// over a persistent native-messaging port (Browser Protocol v1).
+// Task events stream back on the same port and are mirrored into
+// chrome.storage for the popup.
+
+const HOST_NAME = 'ai.devin.freedm';
+const PROTOCOL = 1;
+const EXT_VERSION = '0.1.0';
+
+let port = null;
+let reqSeq = 0;
+const pending = new Map(); // requestId -> {resolve, reject}
+const tasks = new Map();   // taskId -> latest event snapshot
+
+function ensurePort() {
+  if (port) return port;
+  port = chrome.runtime.connectNative(HOST_NAME);
+  port.onMessage.addListener((msg) => {
+    if (msg && msg.type === 'taskEvent') {
+      const p = msg.event && msg.event.params;
+      if (p && p.taskId) {
+        tasks.set(p.taskId, { ...(tasks.get(p.taskId) || {}), ...p });
+        chrome.storage.local.set({
+          tasks: Object.fromEntries(tasks),
+        });
+      }
+      return;
+    }
+    if (msg && msg.requestId != null) {
+      const h = pending.get(msg.requestId);
+      if (h) {
+        pending.delete(msg.requestId);
+        msg.ok === false ? h.reject(new Error(msg.error)) : h.resolve(msg.result);
+      }
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    const err = chrome.runtime.lastError;
+    port = null;
+    for (const h of pending.values()) h.reject(new Error('host disconnected'));
+    pending.clear();
+    if (err) console.warn('native host disconnected:', err.message);
+  });
+  return port;
+}
+
+function call(command, payload = {}) {
+  return new Promise((resolve, reject) => {
+    const requestId = ++reqSeq;
+    pending.set(requestId, { resolve, reject });
+    ensurePort().postMessage({
+      protocol: PROTOCOL,
+      requestId,
+      source: 'extension',
+      extensionVersion: EXT_VERSION,
+      command,
+      payload,
+    });
+    setTimeout(() => {
+      if (pending.delete(requestId)) reject(new Error('host timeout'));
+    }, 30000);
+  });
+}
+
+async function cookiesFor(url) {
+  try {
+    const list = await chrome.cookies.getAll({ url });
+    if (!list.length) return null;
+    return list.map((c) => `${c.name}=${c.value}`).join('; ');
+  } catch {
+    return null; // no permission for this scheme — fine
+  }
+}
+
+async function sendToFreeDM({ url, referer, filename, pageUrl }) {
+  const headers = {};
+  const cookie = await cookiesFor(url);
+  if (cookie) headers.cookie = cookie;
+  const res = await call('download', {
+    url,
+    referer,
+    pageUrl,
+    suggestedFilename: filename,
+    userAgent: navigator.userAgent,
+    headers,
+  });
+  return res.taskId;
+}
+
+async function enabled() {
+  const s = await chrome.storage.local.get({ enabled: true });
+  return s.enabled;
+}
+
+// ---- capture: browser decided it's a download → take over ----------
+chrome.downloads.onCreated.addListener(async (item) => {
+  try {
+    if (!(await enabled())) return;
+    if (!/^https?:/.test(item.url)) return;
+    if (item.state !== 'in_progress') return;
+    await chrome.downloads.cancel(item.id);
+    await chrome.downloads.erase({ id: item.id });
+    const taskId = await sendToFreeDM({
+      url: item.finalUrl || item.url,
+      referer: item.referrer,
+      filename: item.filename ? item.filename.split(/[\\/]/).pop() : undefined,
+      pageUrl: item.referrer,
+    });
+    tasks.set(taskId, { taskId, type: 'progress', receivedBytes: 0 });
+  } catch (e) {
+    console.warn('capture failed, leaving browser download off', e);
+    // If capture failed after cancel, restart it in the browser.
+    try { await chrome.downloads.download({ url: item.url }); } catch {}
+  }
+});
+
+// ---- context menu ----------------------------------------------------
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: 'freedm-link',
+    title: 'Download with FreeDM',
+    contexts: ['link'],
+  });
+  chrome.contextMenus.create({
+    id: 'freedm-page',
+    title: 'Download this page media with FreeDM',
+    contexts: ['page', 'video', 'audio'],
+  });
+  chrome.contextMenus.create({
+    id: 'freedm-selected',
+    title: 'Download selected links with FreeDM',
+    contexts: ['selection'],
+  });
+});
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  try {
+    if (info.menuItemId === 'freedm-link' && info.linkUrl) {
+      await sendToFreeDM({
+        url: info.linkUrl, pageUrl: info.pageUrl, referer: info.pageUrl,
+      });
+    } else if (info.menuItemId === 'freedm-page') {
+      const url = info.srcUrl || info.pageUrl;
+      await sendToFreeDM({ url, pageUrl: info.pageUrl, referer: info.pageUrl });
+    } else if (info.menuItemId === 'freedm-selected' && tab) {
+      const [r] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          const sel = window.getSelection();
+          const urls = new Set();
+          if (sel && sel.rangeCount) {
+            const frag = sel.getRangeAt(0).cloneContents();
+            frag.querySelectorAll('a[href]').forEach((a) => urls.add(a.href));
+          }
+          // also catch plain-text selected URLs
+          (sel ? sel.toString() : '')
+            .match(/https?:\/\/[^\s"'<>]+/g)?.forEach((u) => urls.add(u));
+          return [...urls];
+        },
+      });
+      for (const url of r.result || []) {
+        await sendToFreeDM({ url, pageUrl: info.pageUrl, referer: info.pageUrl });
+      }
+    }
+  } catch (e) {
+    console.warn('context-menu send failed', e);
+  }
+});
+
+// ---- messages from the popup ------------------------------------------
+chrome.runtime.onMessage.addListener((m, _s, send) => {
+  (async () => {
+    if (m.cmd === 'ping') send(await call('ping'));
+    else if (m.cmd === 'pause' || m.cmd === 'resume' || m.cmd === 'cancel') {
+      send(await call(m.cmd, { taskId: m.taskId }));
+    } else if (m.cmd === 'status') {
+      send(await call('status', { taskId: m.taskId }));
+    }
+  })().catch((e) => send({ ok: false, error: String(e) }));
+  return true; // async response
+});

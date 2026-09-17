@@ -337,6 +337,27 @@ fn handle(
                     validate_url(u)?;
                 }
             }
+            // headers pass-through (cookie/authorization come from the
+            // extension's capture context) — names/values must be
+            // printable header text: no CR/LF, no control chars.
+            let mut headers = Map::new();
+            if let Some(h) = p.get("headers").and_then(|v| v.as_object()) {
+                for (k, v) in h {
+                    let val = v.as_str().unwrap_or("");
+                    if k.len() > 128
+                        || val.len() > 8192
+                        || k.chars().any(|c| {
+                            c.is_control() || c == ':' || c.is_whitespace()
+                        })
+                        || val.chars().any(|c| {
+                            c.is_control() && c != '\t'
+                        })
+                    {
+                        return Err("invalid header name/value".into());
+                    }
+                    headers.insert(k.clone(), json!(val));
+                }
+            }
             if engine.is_none() {
                 *engine = Some(spawn_engine(cfg)?);
             }
@@ -365,6 +386,9 @@ fn handle(
             }
             if let Some(ua) = p.get("userAgent").and_then(|v| v.as_str()) {
                 dto.insert("userAgent".into(), json!(ua));
+            }
+            if !headers.is_empty() {
+                dto.insert("headers".into(), Value::Object(headers));
             }
             let mut params = Map::new();
             params.insert("taskId".into(), json!(task_id));

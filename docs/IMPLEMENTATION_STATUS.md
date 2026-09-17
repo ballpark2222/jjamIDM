@@ -15,15 +15,20 @@
   atomic-ish flush), DownloadScheduler (concurrency cap, priority
   queue, retry policy, speed-policy plumbing, restart recovery) —
   12 tests pass. ADR 0004: JSON now, SQLite via component manager.
+- M5 native host: Rust (gnu toolchain), Browser Protocol v1 framing,
+  origin/command/URL validation, engine cold-launch + NDJSON bridge,
+  streaming task events — 10 checks + full E2E pass.
+- M6 extension MV3: download auto-capture, context menu
+  (link/page/selected-links), cookie+referer+UA propagation, popup
+  (toggle, task list, pause/resume/cancel).
 
 ## In Progress
 
-- M5 — native messaging host (Rust)
+- M7-9 — media API + yt-dlp/FFmpeg adapters
 
 ## Not Started
 
-- M6 browser extension · M7 media APIs
-- M8 yt-dlp · M9 FFmpeg · M10 media detection · M11 URL refresh
+- M7 media APIs · M8 yt-dlp · M9 FFmpeg · M10 media detection · M11 URL refresh
 - M12 component manager · M13 upstream pipeline · M14 UI
 - M15 RC + audit handoff
 
