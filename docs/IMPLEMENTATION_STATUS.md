@@ -53,6 +53,14 @@
   extension, SHA256SUMS.json); docs/AUDIT_HANDOFF.md with provenance
   table, clean-machine verification procedure, and limitations.
 
+- Media pipeline orchestration: MediaDownloadCoordinator drives
+  resolvingMedia→downloadingVideo/Audio→muxing→subtitleProcessing→
+  verifying→completed through the state machine; ComponentDownloader
+  port added to media-api; YtDlpDownloader implements it.
+- Real-binary verification: yt-dlp.exe 2026.08.19 probed the local
+  HLS fixture AND a live YouTube watch page through YtDlpResolver —
+  ~20 formats normalized (codec flags, protocol, sizes).
+
 ## In Progress
 
 - (none)
@@ -90,8 +98,9 @@
 - Brisk has no speed limiter — FreeDM throttle layer required (M4).
 - Sha256OnlyVerifier checks hashes only; release builds must plug a
   minisign/ed25519 SignatureVerifier against a pinned public key.
-- yt-dlp/FFmpeg adapters verified against fake shims; real-binary
-  contract tests deferred to M15 release verification.
+- yt-dlp real binary verified against fixture HLS + live YouTube
+  (adapter-ytdlp/tool/real_probe*.dart). FFmpeg real-binary check
+  remains release-stage work.
 
 ## Environment notes
 
