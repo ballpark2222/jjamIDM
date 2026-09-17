@@ -10,6 +10,7 @@
     "cookies",
     "scripting",
     "nativeMessaging",
+    "notifications",
     "storage",
     "activeTab"
   ],

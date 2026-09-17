@@ -13,18 +13,47 @@ let reqSeq = 0;
 const pending = new Map(); // requestId -> {resolve, reject}
 const tasks = new Map();   // taskId -> latest event snapshot
 
+function notify(title, message) {
+  chrome.notifications.create({
+    type: 'basic',
+    iconUrl: 'icons/icon48.png',
+    title,
+    message,
+  });
+}
+
+function updateBadge() {
+  const active = [...tasks.values()].filter(
+    (t) => !['completed', 'failed', 'cancelled'].includes(t.status || t.type),
+  ).length;
+  chrome.action.setBadgeText({ text: active ? String(active) : '' });
+  chrome.action.setBadgeBackgroundColor({ color: '#1565c0' });
+}
+
 function ensurePort() {
   if (port) return port;
   port = chrome.runtime.connectNative(HOST_NAME);
   port.onMessage.addListener((msg) => {
     if (msg && msg.type === 'taskEvent') {
       const p = msg.event && msg.event.params;
-      if (p && p.taskId) {
-        tasks.set(p.taskId, { ...(tasks.get(p.taskId) || {}), ...p });
-        chrome.storage.local.set({
-          tasks: Object.fromEntries(tasks),
-        });
+      if (!p) return;
+      // File events carry fields at top level; media events carry a
+      // TaskCodec snapshot under `task`. Normalize to a flat record.
+      const rec = p.task ? { ...p.task, type: 'media' }
+                         : { ...p };
+      const id = rec.taskId || (rec.task && rec.task.id) || rec.id;
+      if (!id) return;
+      const prev = tasks.get(id) || {};
+      tasks.set(id, { ...prev, ...rec });
+      if (rec.status === 'completed' && prev.status !== 'completed') {
+        const name = (rec.output && rec.output.fileName) || id;
+        notify('FreeDM — 다운로드 완료', name);
       }
+      if (rec.status === 'failed' && prev.status !== 'failed') {
+        notify('FreeDM — 다운로드 실패', rec.lastError || id);
+      }
+      chrome.storage.local.set({ tasks: Object.fromEntries(tasks) });
+      updateBadge();
       return;
     }
     if (msg && msg.requestId != null) {
@@ -85,6 +114,7 @@ async function sendToFreeDM({ url, referer, filename, pageUrl }) {
     userAgent: navigator.userAgent,
     headers,
   });
+  notify('FreeDM — 다운로드 시작', filename || url);
   return res.taskId;
 }
 
@@ -92,6 +122,7 @@ async function sendToFreeDM({ url, referer, filename, pageUrl }) {
 // The engine resolves formats with yt-dlp and muxes with FFmpeg.
 async function sendMediaToFreeDM(pageUrl) {
   const res = await call('media', { pageUrl });
+  notify('FreeDM — 미디어 다운로드 시작', pageUrl);
   return res.taskId;
 }
 
@@ -117,6 +148,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
     tasks.set(taskId, { taskId, type: 'progress', receivedBytes: 0 });
   } catch (e) {
     console.warn('capture failed, leaving browser download off', e);
+    notify('FreeDM — 전송 실패 (브라우저 다운로드로 복구)', String(e));
     // If capture failed after cancel, restart it in the browser.
     try { await chrome.downloads.download({ url: item.url }); } catch {}
   }
@@ -180,6 +212,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     }
   } catch (e) {
     console.warn('context-menu send failed', e);
+    notify('FreeDM — 전송 실패', String(e));
   }
 });
 
