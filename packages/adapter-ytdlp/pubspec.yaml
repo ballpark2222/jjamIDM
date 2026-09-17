@@ -1,11 +1,13 @@
 name: freedm_adapter_ytdlp
-description: "FreeDM freedm_adapter_ytdlp."
+description: "FreeDM yt-dlp media resolver adapter."
 publish_to: none
 version: 0.1.0
 environment:
   sdk: ^3.13.0
 resolution: workspace
 dependencies:
+  freedm_media_api:
+    path: ../media-api
 dev_dependencies:
   test: ^1.26.0
   lints: ^6.0.0

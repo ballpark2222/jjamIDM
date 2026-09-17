@@ -1,5 +1,5 @@
 name: freedm_media_api
-description: "FreeDM freedm_media_api."
+description: "FreeDM media resolver/muxer port API."
 publish_to: none
 version: 0.1.0
 environment:
