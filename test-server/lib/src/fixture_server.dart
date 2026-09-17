@@ -125,6 +125,13 @@ final class FixtureServer {
                 length: defaultLength, ranges: true);
           }
           return _deny(res, HttpStatus.forbidden);
+        case '/file-head-rejected':
+          // Some CDNs 404 HEAD entirely while GET/Range work fine.
+          if (req.method == 'HEAD') {
+            return _deny(res, HttpStatus.notFound);
+          }
+          return await _serveFile(req,
+              length: defaultLength, ranges: true);
         case '/file-changing-etag':
           return await _serveFile(req,
               length: defaultLength,

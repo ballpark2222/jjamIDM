@@ -39,18 +39,23 @@ function ensurePort() {
       if (!p) return;
       // File events carry fields at top level; media events carry a
       // TaskCodec snapshot under `task`. Normalize to a flat record.
-      const rec = p.task ? { ...p.task, type: 'media' }
+      const rec = p.task ? { ...p.task, media: true }
                          : { ...p };
       const id = rec.taskId || (rec.task && rec.task.id) || rec.id;
       if (!id) return;
       const prev = tasks.get(id) || {};
       tasks.set(id, { ...prev, ...rec });
-      if (rec.status === 'completed' && prev.status !== 'completed') {
-        const name = (rec.output && rec.output.fileName) || id;
+      // File events carry `type`; media task snapshots carry `status`.
+      const st = rec.status || rec.type;
+      const prevSt = prev.status || prev.type;
+      if (st === 'completed' && prevSt !== 'completed') {
+        const name = rec.fileName ||
+            (rec.output && rec.output.fileName) || id;
         notify('FreeDM — 다운로드 완료', name);
       }
-      if (rec.status === 'failed' && prev.status !== 'failed') {
-        notify('FreeDM — 다운로드 실패', rec.lastError || id);
+      if (st === 'failed' && prevSt !== 'failed') {
+        notify('FreeDM — 다운로드 실패',
+            rec.error || rec.detail || rec.lastError || id);
       }
       chrome.storage.local.set({ tasks: Object.fromEntries(tasks) });
       updateBadge();

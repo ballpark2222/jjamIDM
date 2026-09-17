@@ -67,12 +67,84 @@ final class BriskEngineAdapter implements DownloadEngine {
         torrent: false,
       );
 
+  /// HEAD probe first (upstream requestFileInfo); when the server
+  /// rejects HEAD entirely (some CDNs 404 it while GET works), fall
+  /// back to a 1-byte range GET and read metadata off the response.
+  Future<brisk.FileInfo?> _fileInfo(
+      String url, Map<String, String> headers) async {
+    try {
+      final info = await brisk.HttpDownloadEngine
+          .requestFileInfo(url, headers: headers)
+          .timeout(const Duration(seconds: 15));
+      if (info != null && info.contentLength > 0) return info;
+    } catch (_) {}
+    return _rangeGetProbe(url, headers);
+  }
+
+  Future<brisk.FileInfo?> _rangeGetProbe(
+      String url, Map<String, String> headers) async {
+    final client = HttpClient();
+    try {
+      final req = await client
+          .getUrl(Uri.parse(url))
+          .timeout(const Duration(seconds: 15));
+      for (final e in headers.entries) {
+        req.headers.set(e.key, e.value);
+      }
+      req.headers.set('Range', 'bytes=0-0');
+      final res =
+          await req.close().timeout(const Duration(seconds: 15));
+      await res.drain<void>();
+      if (res.statusCode != 200 && res.statusCode != 206) return null;
+
+      var total = 0;
+      if (res.statusCode == 206) {
+        // Content-Range: bytes 0-0/<total>
+        final cr = res.headers.value('content-range') ?? '';
+        final m = RegExp(r'/(\d+)\s*$').firstMatch(cr);
+        if (m != null) total = int.parse(m.group(1)!);
+      } else {
+        total = res.headers.contentLength; // Range ignored → full size
+      }
+      if (total <= 0) return null;
+
+      final cd = res.headers.value('content-disposition');
+      final name = _fileNameFromDisposition(cd) ??
+          _fileNameFromUrl(res.redirects.isNotEmpty
+              ? res.redirects.last.location.toString()
+              : url);
+      return brisk.FileInfo(
+        res.statusCode == 206,
+        name,
+        total,
+        res.redirects.isEmpty
+            ? ''
+            : res.redirects.last.location.toString(),
+      );
+    } catch (_) {
+      return null;
+    } finally {
+      client.close();
+    }
+  }
+
+  static String? _fileNameFromDisposition(String? cd) {
+    if (cd == null) return null;
+    final star =
+        RegExp("""filename\\*=UTF-8''([^;]+)""").firstMatch(cd);
+    if (star != null) {
+      return Uri.decodeComponent(star.group(1)!.trim());
+    }
+    final q = RegExp(r'filename="?([^";]+)"?').firstMatch(cd);
+    return q?.group(1)?.trim();
+  }
+
   @override
   Future<ProbeResult> probe(DownloadRequest request) async {
     try {
-      final info = await brisk.HttpDownloadEngine.requestFileInfo(
+      final info = await _fileInfo(
         request.source.effectiveUrl,
-        headers: _mergedHeaders(request),
+        _mergedHeaders(request),
       );
       if (info == null) return const ProbeResult(supported: false);
       return ProbeResult(
@@ -101,9 +173,9 @@ final class BriskEngineAdapter implements DownloadEngine {
     // real error.
     brisk.FileInfo? info;
     try {
-      info = await brisk.HttpDownloadEngine.requestFileInfo(
+      info = await _fileInfo(
         request.source.effectiveUrl,
-        headers: merged,
+        merged,
       );
     } catch (_) {
       info = null;

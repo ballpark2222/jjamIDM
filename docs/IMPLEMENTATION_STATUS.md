@@ -116,10 +116,14 @@
 - desktop: flutter widget + helper tests 2
 - media e2e: media.probe + media.enqueue over protocol v2 → real
   yt-dlp HLS download → ffmpeg mux → delivered file (engine-host)
-- total: 81 dart tests + 2 flutter tests green
+- total: 83 dart tests + 2 flutter tests green
 - real-binary: yt-dlp 2026.08.19 probe+download (HLS fixture,
   live YouTube), ffmpeg 9.0.1 mux (lavfi synth → ffprobe),
   full pipeline YouTube→mkv (tools/real-pipeline)
+- HEAD-rejecting CDN: HEAD probe falls back to a 1-byte range GET
+  (brisk patch 0003 + adapter fallback); verified live against
+  xhscdn signed URL (HEAD→404, GET→206) — 59,465,115-byte file
+  delivered to Downloads\FreeDM via packaged native host
 
 ## Known Limitations (for audit notes)
 

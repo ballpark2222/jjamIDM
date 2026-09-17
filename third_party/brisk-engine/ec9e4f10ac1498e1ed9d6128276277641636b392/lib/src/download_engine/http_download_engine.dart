@@ -1327,7 +1327,13 @@ class HttpDownloadEngine {
       var filename = _extractFilenameFromHeaders(headers);
       filename ??= extractFileNameFromUrl(url);
       if (headers["content-length"] == null) {
-        throw Exception({"Could not retrieve result from the given URL"});
+        // FreeDM patch 0003: complete(null) instead of throwing — a
+        // throw inside a stream listener escapes as an uncaught async
+        // error and leaves the completer pending forever. Callers use
+        // null to trigger their own fallback (e.g. a range-GET probe
+        // for servers that reject HEAD).
+        completer.complete(null);
+        return;
       }
       final contentLength = int.parse(headers["content-length"]!);
       final fileName = Uri.decodeComponent(filename);

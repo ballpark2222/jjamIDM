@@ -1,0 +1,19 @@
+diff --git a/lib/src/download_engine/http_download_engine.dart b/lib/src/download_engine/http_download_engine.dart
+index ORIG..PATCH 100644
+--- a/lib/src/download_engine/http_download_engine.dart
++++ b/lib/src/download_engine/http_download_engine.dart
+@@ -1329,7 +1329,12 @@
+       var filename = _extractFilenameFromHeaders(headers);
+       filename ??= extractFileNameFromUrl(url);
+       if (headers["content-length"] == null) {
+-        throw Exception({"Could not retrieve result from the given URL"});
++        // FreeDM patch 0003: complete(null) instead of throwing — a
++        // throw inside a stream listener escapes as an uncaught async
++        // error and leaves the completer pending forever (probe hangs
++        // until timeout). Returning null lets callers run their own
++        // fallback probe (range GET) for servers that reject HEAD.
++        completer.complete(null);
++        return;
+       }
+       final contentLength = int.parse(headers["content-length"]!);
+       final fileName = Uri.decodeComponent(filename);

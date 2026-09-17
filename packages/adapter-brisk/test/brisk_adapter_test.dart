@@ -51,6 +51,35 @@ void main() {
     expect(p.totalBytes, FixtureServer.defaultLength);
   });
 
+  test('probe falls back to range GET when HEAD is rejected', () async {
+    // /file-head-rejected returns 404 to HEAD but 206 to GET —
+    // models CDNs that refuse HEAD (e.g. xhscdn signed URLs).
+    final engine = newEngine();
+    final p = await engine.probe(req('/file-head-rejected'));
+    expect(p.supported, isTrue,
+        reason: 'GET/Range-capable server must probe OK despite HEAD 404');
+    expect(p.acceptsRanges, isTrue);
+    expect(p.totalBytes, FixtureServer.defaultLength);
+  });
+
+  test('download completes on a HEAD-rejecting server', () async {
+    final engine = newEngine();
+    const id = TaskId('dl-nohead');
+    await engine.create(id, req('/file-head-rejected', conns: 4));
+    final done = Completer<EngineEvent>();
+    engine.events(id).listen((e) {
+      if (e is EngineCompleted || e is EngineFailed) done.complete(e);
+    });
+    await engine.start(id);
+    final e = await done.future.timeout(const Duration(minutes: 2));
+    expect(e, isA<EngineCompleted>(),
+        reason: (e is EngineFailed) ? '${e.detail}' : '');
+
+    final file = File((e as EngineCompleted).outputPath!);
+    expect(sha256.convert(await file.readAsBytes()).toString(),
+        await expectedHash(FixtureServer.defaultLength));
+  });
+
   test('capabilities', () async {
     final c = await newEngine().capabilities();
     expect(c.segmentedDownload, isTrue);
