@@ -80,6 +80,17 @@ void main() {
         await expectedHash(FixtureServer.defaultLength));
   });
 
+  test('extensionless CDN name gains an extension from content-type',
+      () async {
+    // /file-video-noext: HEAD→404, URL has no extension,
+    // Content-Type: video/mp4 → probe name must end in .mp4 so the
+    // saved file opens on double-click.
+    final engine = newEngine();
+    final p = await engine.probe(req('/file-video-noext'));
+    expect(p.supported, isTrue);
+    expect(p.fileName, endsWith('.mp4'));
+  });
+
   test('capabilities', () async {
     final c = await newEngine().capabilities();
     expect(c.segmentedDownload, isTrue);

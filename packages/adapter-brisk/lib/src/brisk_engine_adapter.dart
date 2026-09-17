@@ -109,10 +109,18 @@ final class BriskEngineAdapter implements DownloadEngine {
       if (total <= 0) return null;
 
       final cd = res.headers.value('content-disposition');
-      final name = _fileNameFromDisposition(cd) ??
+      var name = _fileNameFromDisposition(cd) ??
           _fileNameFromUrl(res.redirects.isNotEmpty
               ? res.redirects.last.location.toString()
               : url);
+      // CDN URLs often end in an extensionless token (xhs, signed
+      // blobs) — without an extension the file won't open on
+      // double-click. Infer one from Content-Type when missing.
+      if (!name.contains('.')) {
+        final ext =
+            _extForContentType(res.headers.contentType?.mimeType);
+        if (ext != null) name = '$name.$ext';
+      }
       return brisk.FileInfo(
         res.statusCode == 206,
         name,
@@ -127,6 +135,32 @@ final class BriskEngineAdapter implements DownloadEngine {
       client.close();
     }
   }
+
+  static const _contentTypeExt = {
+    'video/mp4': 'mp4',
+    'video/webm': 'webm',
+    'video/x-matroska': 'mkv',
+    'video/quicktime': 'mov',
+    'audio/mpeg': 'mp3',
+    'audio/mp4': 'm4a',
+    'audio/ogg': 'ogg',
+    'audio/webm': 'weba',
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'image/avif': 'avif',
+    'application/pdf': 'pdf',
+    'application/zip': 'zip',
+    'application/x-7z-compressed': '7z',
+    'application/x-rar-compressed': 'rar',
+    'application/json': 'json',
+    'text/plain': 'txt',
+    'text/html': 'html',
+  };
+
+  static String? _extForContentType(String? mime) =>
+      mime == null ? null : _contentTypeExt[mime.toLowerCase()];
 
   static String? _fileNameFromDisposition(String? cd) {
     if (cd == null) return null;

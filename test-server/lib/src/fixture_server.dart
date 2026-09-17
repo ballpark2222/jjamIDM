@@ -132,6 +132,16 @@ final class FixtureServer {
           }
           return await _serveFile(req,
               length: defaultLength, ranges: true);
+        case '/file-video-noext':
+          // Signed-CDN shape: HEAD rejected, extensionless URL token,
+          // real type only in Content-Type.
+          if (req.method == 'HEAD') {
+            return _deny(res, HttpStatus.notFound);
+          }
+          return await _serveFile(req,
+              length: defaultLength,
+              ranges: true,
+              contentType: ContentType('video', 'mp4'));
         case '/file-changing-etag':
           return await _serveFile(req,
               length: defaultLength,
@@ -172,13 +182,14 @@ final class FixtureServer {
     bool ranges = false,
     int chunkDelay = 0,
     String? etag,
+    ContentType? contentType,
   }) async {
     final res = req.response;
     res.headers.set('etag', etag ?? '"fixture-$seed-$length"');
     res.headers.set('last-modified', 'Thu, 01 Jan 2026 00:00:00 GMT');
     res.headers.set('accept-ranges', ranges ? 'bytes' : 'none');
     res.headers.contentType =
-        ContentType('application', 'octet-stream');
+        contentType ?? ContentType('application', 'octet-stream');
 
     var start = 0;
     var end = length - 1;

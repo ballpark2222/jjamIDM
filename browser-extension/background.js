@@ -13,6 +13,8 @@ let reqSeq = 0;
 const pending = new Map(); // requestId -> {resolve, reject}
 const tasks = new Map();   // taskId -> latest event snapshot
 
+const notifPaths = new Map(); // notificationId -> outputPath
+
 function notify(title, message) {
   chrome.notifications.create({
     type: 'basic',
@@ -21,6 +23,31 @@ function notify(title, message) {
     message,
   });
 }
+
+// IDM-style completion popup: buttons to open the file / its folder.
+// Chrome forbids opening real popups programmatically, so the
+// notification is the closest allowed surface.
+function notifyDone(name, outputPath) {
+  const id = `done-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  if (outputPath) notifPaths.set(id, outputPath);
+  chrome.notifications.create(id, {
+    type: 'basic',
+    iconUrl: 'icons/icon48.png',
+    title: 'FreeDM — 다운로드 완료',
+    message: name,
+    buttons: outputPath
+      ? [{ title: '파일 열기' }, { title: '폴더 열기' }]
+      : [],
+  });
+  setTimeout(() => notifPaths.delete(id), 10 * 60 * 1000);
+}
+
+chrome.notifications.onButtonClicked.addListener((id, btn) => {
+  const path = notifPaths.get(id);
+  if (!path) return;
+  notifPaths.delete(id);
+  call(btn === 0 ? 'open' : 'reveal', { path }).catch(() => {});
+});
 
 function updateBadge() {
   const active = [...tasks.values()].filter(
@@ -50,8 +77,9 @@ function ensurePort() {
       const prevSt = prev.status || prev.type;
       if (st === 'completed' && prevSt !== 'completed') {
         const name = rec.fileName ||
-            (rec.output && rec.output.fileName) || id;
-        notify('FreeDM — 다운로드 완료', name);
+            (rec.output && rec.output.fileName) ||
+            (rec.outputPath || '').split(/[\\/]/).pop() || id;
+        notifyDone(name, rec.outputPath);
       }
       if (st === 'failed' && prevSt !== 'failed') {
         notify('FreeDM — 다운로드 실패',

@@ -32,6 +32,8 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "cancel",
     "status",
     "list",
+    "reveal",
+    "open",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -458,6 +460,45 @@ fn handle(
             let mut p = Map::new();
             p.insert("taskId".into(), json!(id));
             e.call("task.status", p)
+        }
+        "reveal" | "open" => {
+            // Open/reveal a completed download in Explorer. The path
+            // comes from the extension (it saw outputPath in the
+            // completed event) but must resolve inside download_dir —
+            // an extension can never open arbitrary paths.
+            let raw = msg
+                .payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if raw.is_empty()
+                || raw.len() > 1024
+                || raw.chars().any(|c| c.is_control())
+            {
+                return Err("invalid path".into());
+            }
+            let base = cfg.download_dir.clone().ok_or("downloadDir unset")?;
+            let canon_base = std::fs::canonicalize(&base)
+                .map_err(|_| "downloadDir not found".to_string())?;
+            let canon_path = std::fs::canonicalize(raw)
+                .map_err(|_| "path not found".to_string())?;
+            if !canon_path.starts_with(&canon_base) {
+                return Err("path outside downloadDir".into());
+            }
+            // canonicalize yields \\?\ verbatim paths — explorer.exe
+            // does not understand them, so strip the prefix.
+            let disp = canon_path
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_string();
+            let mut cmd = std::process::Command::new("explorer.exe");
+            if msg.command == "reveal" {
+                cmd.arg(format!("/select,{}", disp));
+            } else {
+                cmd.arg(&disp);
+            }
+            cmd.spawn().map_err(|e| format!("explorer: {}", e))?;
+            Ok(json!({"ok": true}))
         }
         "list" => Ok(json!({"tasks": []})), // populated once repo IPC lands
         other => Err(format!("command not allowed: {}", other)),
