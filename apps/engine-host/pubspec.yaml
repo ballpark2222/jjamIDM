@@ -17,3 +17,5 @@ dependencies:
 dev_dependencies:
   test: ^1.26.0
   lints: ^6.0.0
+  freedm_test_server:
+    path: ../../test-server
