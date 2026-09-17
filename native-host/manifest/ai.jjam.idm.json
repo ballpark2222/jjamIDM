@@ -1,0 +1,9 @@
+{
+  "name": "ai.jjam.idm",
+  "description": "jjamIDM native messaging host",
+  "path": "C:\\Program Files\\jjamIDM\\jjamidm_native_host.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://lfgbaljhboceihkklkifpfbengheamdo/"
+  ]
+}

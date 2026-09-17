@@ -26,11 +26,11 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final dataDir =
       '${Platform.environment['LOCALAPPDATA'] ?? Directory.systemTemp.path}'
-      '${Platform.pathSeparator}FreeDM';
+      '${Platform.pathSeparator}jjamIDM';
   final downloadDir =
       '${Platform.environment['USERPROFILE'] ?? dataDir}'
           '${Platform.pathSeparator}Downloads'
-          '${Platform.pathSeparator}FreeDM';
+          '${Platform.pathSeparator}jjamIDM';
   await Directory('$dataDir${Platform.pathSeparator}tasks')
       .create(recursive: true);
   await Directory(downloadDir).create(recursive: true);
@@ -38,11 +38,11 @@ Future<void> main() async {
   // Control plane ↔ engine bundle boundary: engine-host is spawned
   // and spoken to over NDJSON-RPC (DownloadEngine Protocol v1).
   final sep = Platform.pathSeparator;
-  // Packaged builds ship freedm-engine-host.exe next to the app;
+  // Packaged builds ship jjamidm-engine-host.exe next to the app;
   // dev runs spawn the Dart entry point from the repo.
   final exeDir = File(Platform.resolvedExecutable).parent.path;
   final bundledHost =
-      File('$exeDir${sep}freedm-engine-host.exe');
+      File('$exeDir${sep}jjamidm-engine-host.exe');
   final engine = await EngineHostClient.spawn([
     if (bundledHost.existsSync())
       bundledHost.path
@@ -140,7 +140,7 @@ class FreeDmApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'FreeDM',
+        title: 'jjamIDM',
         theme: ThemeData(
             colorSchemeSeed: Colors.blueGrey,
             brightness: Brightness.dark,
@@ -163,7 +163,7 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final c = widget.controller;
     return Scaffold(
-      appBar: AppBar(title: const Text('FreeDM'), actions: [
+      appBar: AppBar(title: const Text('jjamIDM'), actions: [
         IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh components',

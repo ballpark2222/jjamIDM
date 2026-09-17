@@ -1,10 +1,10 @@
-# FreeDM
+# jjamIDM
 
-FreeDM은 IDM(Internet Download Manager)급 UX를 목표로 하는 무료 오픈소스 다운로드 매니저 플랫폼이다.
+jjamIDM은 IDM(Internet Download Manager)급 UX를 목표로 하는 무료 오픈소스 다운로드 매니저 플랫폼이다.
 
 핵심 설계 문장:
 
-> **FreeDM은 특정 프로젝트의 개조판이 아니라 독립 Download Manager Platform이며,
+> **jjamIDM은 특정 프로젝트의 개조판이 아니라 독립 Download Manager Platform이며,
 > Brisk / yt-dlp / FFmpeg 등은 교체 가능한 Provider다.**
 
 ## Architecture (요약)
@@ -16,7 +16,7 @@ Browser Extension (MV3)
 freedm-native-host (Rust)
       │  Local IPC Protocol v1
       ▼
-FreeDM Desktop / Stable Core (Dart)
+jjamIDM Desktop / Stable Core (Dart)
       │  DownloadEngine Protocol v2 (media.* 추가)
       ▼
 freedm-engine-host ── BriskAdapter ── pinned Brisk engine

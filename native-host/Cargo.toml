@@ -1,8 +1,8 @@
 [package]
-name = "freedm_native_host"
+name = "jjamidm_native_host"
 version = "0.1.0"
 edition = "2021"
-description = "FreeDM native messaging host — Chrome/Edge <-> engine-host bridge"
+description = "jjamIDM native messaging host — Chrome/Edge <-> engine-host bridge"
 license = "GPL-3.0-or-later"
 publish = false
 

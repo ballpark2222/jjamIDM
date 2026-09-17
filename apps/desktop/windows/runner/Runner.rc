@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "ai.devin" "\0"
-            VALUE "FileDescription", "freedm_desktop" "\0"
+            VALUE "FileDescription", "jjamidm" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "freedm_desktop" "\0"
+            VALUE "InternalName", "jjamidm" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 ai.devin. All rights reserved." "\0"
-            VALUE "OriginalFilename", "freedm_desktop.exe" "\0"
-            VALUE "ProductName", "freedm_desktop" "\0"
+            VALUE "OriginalFilename", "jjamidm.exe" "\0"
+            VALUE "ProductName", "jjamidm" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

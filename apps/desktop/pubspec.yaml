@@ -1,5 +1,5 @@
-name: freedm_desktop
-description: "FreeDM desktop app (Flutter)."
+name: jjamidm
+description: "jjamIDM desktop app (Flutter)."
 publish_to: none
 version: 0.1.0
 environment:

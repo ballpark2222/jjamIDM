@@ -1,6 +1,6 @@
-# FreeDM — AGENTS.md
+# jjamIDM — AGENTS.md
 
-FreeDM is an independent open-source download manager platform.
+jjamIDM is an independent open-source download manager platform.
 Brisk / yt-dlp / FFmpeg are **replaceable providers**, not the product core.
 
 ## Mandatory rules

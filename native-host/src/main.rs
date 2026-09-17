@@ -1,4 +1,4 @@
-//! FreeDM native messaging host (Browser Protocol v1).
+//! jjamIDM native messaging host (Browser Protocol v1).
 //!
 //! Chrome/Edge native messaging framing on stdin/stdout:
 //!   [u32 little-endian length][UTF-8 JSON message]
@@ -65,11 +65,15 @@ struct Config {
 }
 
 fn load_config() -> Config {
-    // %APPDATA%\FreeDM\native-host.json (or FREEDM_NATIVE_HOST_CONFIG)
-    let path = env::var("FREEDM_NATIVE_HOST_CONFIG").ok().or_else(|| {
-        env::var("APPDATA")
-            .ok()
-            .map(|d| format!("{}\\FreeDM\\native-host.json", d))
+    // %APPDATA%\jjamIDM\native-host.json (or JJAMIDM_NATIVE_HOST_CONFIG;
+    // FREEDM_NATIVE_HOST_CONFIG kept as a legacy fallback).
+    let path = env::var("JJAMIDM_NATIVE_HOST_CONFIG")
+        .ok()
+        .or_else(|| env::var("FREEDM_NATIVE_HOST_CONFIG").ok())
+        .or_else(|| {
+            env::var("APPDATA")
+                .ok()
+                .map(|d| format!("{}\\jjamIDM\\native-host.json", d))
     });
     let mut cfg = Config {
         allowed_origins: vec![],

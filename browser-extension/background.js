@@ -1,10 +1,10 @@
-// FreeDM background service worker (MV3).
+// jjamIDM background service worker (MV3).
 // Captures browser downloads and forwards them to the native host
 // over a persistent native-messaging port (Browser Protocol v1).
 // Task events stream back on the same port and are mirrored into
 // chrome.storage for the popup.
 
-const HOST_NAME = 'ai.devin.freedm';
+const HOST_NAME = 'ai.jjam.idm';
 const PROTOCOL = 1;
 const EXT_VERSION = '0.1.0';
 
@@ -34,7 +34,7 @@ function notifyDone(name, outputPath) {
   chrome.notifications.create(id, {
     type: 'basic',
     iconUrl: 'icons/icon48.png',
-    title: 'FreeDM — 다운로드 완료',
+    title: 'jjamIDM — 다운로드 완료',
     message: name,
     buttons: outputPath
       ? [{ title: '파일 열기' }, { title: '폴더 열기' }]
@@ -89,7 +89,7 @@ function ensurePort() {
       }
       if (st === 'failed' && !doneNotified.has(id)) {
         doneNotified.add(id);
-        notify('FreeDM — 다운로드 실패',
+        notify('jjamIDM — 다운로드 실패',
             rec.error || rec.detail || rec.lastError || id);
       }
       chrome.storage.local.set({ tasks: Object.fromEntries(tasks) });
@@ -154,7 +154,7 @@ async function sendToFreeDM({ url, referer, filename, pageUrl }) {
     userAgent: navigator.userAgent,
     headers,
   });
-  notify('FreeDM — 다운로드 시작', filename || url);
+  notify('jjamIDM — 다운로드 시작', filename || url);
   return res.taskId;
 }
 
@@ -162,7 +162,7 @@ async function sendToFreeDM({ url, referer, filename, pageUrl }) {
 // The engine resolves formats with yt-dlp and muxes with FFmpeg.
 async function sendMediaToFreeDM(pageUrl) {
   const res = await call('media', { pageUrl });
-  notify('FreeDM — 미디어 다운로드 시작', pageUrl);
+  notify('jjamIDM — 미디어 다운로드 시작', pageUrl);
   return res.taskId;
 }
 
@@ -194,7 +194,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
     tasks.set(taskId, { taskId, type: 'progress', receivedBytes: 0 });
   } catch (e) {
     console.warn('capture failed, leaving browser download off', e);
-    notify('FreeDM — 전송 실패 (브라우저 다운로드로 복구)', String(e));
+    notify('jjamIDM — 전송 실패 (브라우저 다운로드로 복구)', String(e));
     // Hand it back to the browser once — and never recapture this
     // URL, or we'd loop failing downloads forever.
     captureFailed.add(item.url);
@@ -207,17 +207,17 @@ chrome.downloads.onCreated.addListener(async (item) => {
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: 'freedm-link',
-    title: 'Download with FreeDM',
+    title: 'Download with jjamIDM',
     contexts: ['link'],
   });
   chrome.contextMenus.create({
     id: 'freedm-page',
-    title: 'Download this page media with FreeDM',
+    title: 'Download this page media with jjamIDM',
     contexts: ['page', 'video', 'audio'],
   });
   chrome.contextMenus.create({
     id: 'freedm-selected',
-    title: 'Download selected links with FreeDM',
+    title: 'Download selected links with jjamIDM',
     contexts: ['selection'],
   });
 });
@@ -261,7 +261,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     }
   } catch (e) {
     console.warn('context-menu send failed', e);
-    notify('FreeDM — 전송 실패', String(e));
+    notify('jjamIDM — 전송 실패', String(e));
   }
 });
 

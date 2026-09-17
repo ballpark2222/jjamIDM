@@ -1,9 +1,9 @@
-# FreeDM RC packaging (design doc §23, M15).
-# Produces release/freedm-rc/ with binaries, extension, manifests,
+# jjamIDM RC packaging (design doc §23, M15).
+# Produces release/jjamidm-rc/ with binaries, extension, manifests,
 # and a sha256 integrity manifest. Run from the repo root:
 #   powershell -File tools/release/package.ps1
 param(
-  [string]$Out = "release/freedm-rc",
+  [string]$Out = "release/jjamidm-rc",
   [string]$Dart = "$PSScriptRoot/../../../.tools/dart-sdk/bin/dart.exe",
   [string]$Cargo = "$env:USERPROFILE\.cargo\bin\cargo.exe"
 )
@@ -11,18 +11,18 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path "$PSScriptRoot/../.."
 $sep = [IO.Path]::DirectorySeparatorChar
 
-Write-Host "== FreeDM RC packaging ==" -ForegroundColor Cyan
+Write-Host "== jjamIDM RC packaging ==" -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path "$root/$Out" | Out-Null
 
 # 1. native host (Rust)
 Push-Location "$root/native-host"
 & $Cargo build --release
-Copy-Item "target/release/freedm_native_host.exe" "$root/$Out/"
+Copy-Item "target/release/jjamidm_native_host.exe" "$root/$Out/"
 Pop-Location
 
 # 2. engine host (AOT dart)
 & $Dart compile exe "$root/apps/engine-host/bin/main.dart" `
-  -o "$root/$Out/freedm-engine-host.exe"
+  -o "$root/$Out/jjamidm-engine-host.exe"
 
 # 3. desktop app — requires Visual Studio C++ workload.
 $Flutter = "$PSScriptRoot/../../../.tools/flutter/bin/flutter.bat"
@@ -34,7 +34,7 @@ if (Get-Command flutter -ErrorAction SilentlyContinue) {
   try { flutter build windows --release } catch {
     Write-Warning "desktop build skipped: $_"
   }
-  if (Test-Path "build/windows/x64/runner/Release/freedm_desktop.exe") {
+  if (Test-Path "build/windows/x64/runner/Release/jjamidm.exe") {
     # Copy the Release dir wholesale — the runner expects its data/
     # subdir (app.so, icudtl.dat, flutter_assets) intact.
     if (Test-Path "$root/$Out/desktop") {
@@ -43,7 +43,7 @@ if (Get-Command flutter -ErrorAction SilentlyContinue) {
     Copy-Item -Recurse "build/windows/x64/runner/Release" `
       "$root/$Out/desktop"
     # The app expects the engine host + media tools next to the exe.
-    Copy-Item "$root/$Out/freedm-engine-host.exe" `
+    Copy-Item "$root/$Out/jjamidm-engine-host.exe" `
       "$root/$Out/desktop/" -ErrorAction SilentlyContinue
     if (Test-Path "$root/$Out/components") {
       Copy-Item -Recurse "$root/$Out/components" `
@@ -73,7 +73,7 @@ if (Test-Path "$root/$Out/browser-extension") {
   Remove-Item -Recurse -Force "$root/$Out/browser-extension"
 }
 Copy-Item -Recurse "$root/browser-extension" "$root/$Out/browser-extension"
-Copy-Item "$root/native-host/manifest/ai.devin.freedm.json" `
+Copy-Item "$root/native-host/manifest/ai.jjam.idm.json" `
   "$root/$Out/browser-extension/native-host-manifest.json" -ErrorAction SilentlyContinue
 
 # 6. integrity manifest — every shipped artifact hashed.
