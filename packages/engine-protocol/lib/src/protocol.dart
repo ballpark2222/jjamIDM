@@ -8,6 +8,7 @@ final class EngineProtocol {
   // commands
   static const String hello = 'engine.hello';
   static const String capabilities = 'engine.capabilities';
+  static const String taskProbe = 'task.probe';
   static const String taskCreate = 'task.create';
   static const String taskStart = 'task.start';
   static const String taskPause = 'task.pause';

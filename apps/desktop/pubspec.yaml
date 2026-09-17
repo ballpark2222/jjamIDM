@@ -1,11 +1,30 @@
 name: freedm_desktop
-description: "FreeDM freedm_desktop."
+description: "FreeDM desktop app (Flutter)."
 publish_to: none
 version: 0.1.0
 environment:
   sdk: ^3.13.0
 resolution: workspace
 dependencies:
+  flutter:
+    sdk: flutter
+  freedm_application:
+    path: ../../packages/application
+  freedm_core_domain:
+    path: ../../packages/core-domain
+  freedm_download_api:
+    path: ../../packages/download-api
+  freedm_engine_host:
+    path: ../../apps/engine-host
+  freedm_event_bus:
+    path: ../../packages/event-bus
+  freedm_persistence:
+    path: ../../packages/persistence
+  freedm_update_api:
+    path: ../../packages/update-api
 dev_dependencies:
-  test: ^1.26.0
-  lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+flutter:
+  uses-material-design: true

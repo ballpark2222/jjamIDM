@@ -88,6 +88,19 @@ final class EngineHostServer {
       case EngineProtocol.capabilities:
         return (await engine.capabilities()).toJson();
 
+      case EngineProtocol.taskProbe:
+        final dto = DownloadRequestDto.fromJson(
+            (req.params['request'] as Map).cast<String, Object?>());
+        final p = await engine.probe(toDomain(dto));
+        return {
+          'supported': p.supported,
+          'fileName': p.fileName,
+          'totalBytes': p.totalBytes,
+          'acceptsRanges': p.acceptsRanges,
+          'finalUrl': p.finalUrl,
+          'contentType': p.contentType,
+        };
+
       case EngineProtocol.taskCreate:
         final dto = DownloadRequestDto.fromJson(
             (req.params['request'] as Map).cast<String, Object?>());
