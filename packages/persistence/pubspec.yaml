@@ -1,11 +1,14 @@
 name: freedm_persistence
-description: "FreeDM freedm_persistence."
+description: "FreeDM persistence adapters (TaskRepository impls)."
 publish_to: none
 version: 0.1.0
 environment:
   sdk: ^3.13.0
 resolution: workspace
 dependencies:
+  freedm_core_domain:
+    path: ../core-domain
+  path: ^1.9.0
 dev_dependencies:
   test: ^1.26.0
   lints: ^6.0.0

@@ -11,14 +11,18 @@
 - M3 engine-host + Brisk adapter: vendored brisk-engine
   (ec9e4f1, MIT) with patch queue, NDJSON protocol v1, engine-host
   process, adapter contract tests — 8 tests pass
+- M4 persistence + scheduler: JsonTaskRepository (TaskRepository port,
+  atomic-ish flush), DownloadScheduler (concurrency cap, priority
+  queue, retry policy, speed-policy plumbing, restart recovery) —
+  12 tests pass. ADR 0004: JSON now, SQLite via component manager.
 
 ## In Progress
 
-- M4 — persistence/queue/scheduler
+- M5 — native messaging host (Rust)
 
 ## Not Started
 
-- M5 native-host (Rust) · M6 browser extension · M7 media APIs
+- M6 browser extension · M7 media APIs
 - M8 yt-dlp · M9 FFmpeg · M10 media detection · M11 URL refresh
 - M12 component manager · M13 upstream pipeline · M14 UI
 - M15 RC + audit handoff
@@ -29,7 +33,9 @@
 
 ## Test Summary
 
-- unit: core-domain 13, event-bus (in M1 batch), protocol DTOs
+- unit: core-domain 13, event-bus (M1 batch), persistence 4
+- application: scheduler 8 (concurrency, priority, pause/resume/
+  cancel, retry, checksum, speed-limit gating, restart recovery)
 - contract: adapter-brisk 8 (probe, caps, full+hash, pause/resume,
   cookie auth, restart-resume, drop-retry, cancel)
 - integration: fixture server 12
