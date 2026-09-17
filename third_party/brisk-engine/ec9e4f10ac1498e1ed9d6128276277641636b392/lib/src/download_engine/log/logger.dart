@@ -65,7 +65,10 @@ class Logger {
         "@${DateTime.now().millisecondsSinceEpoch} ${logLevel.name.toUpperCase()}:: $message",
       );
     }
-    print("${logLevel.name}:: $message");
+    // FreeDM patch 0004: stderr, not stdout — this engine runs inside
+    // engine-host which speaks NDJSON-RPC on stdout; a print() here
+    // corrupts the protocol stream and kills every RPC decode.
+    stderr.writeln("${logLevel.name}:: $message");
   }
 
   File get logFile => File(

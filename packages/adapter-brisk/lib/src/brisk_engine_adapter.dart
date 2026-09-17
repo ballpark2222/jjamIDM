@@ -94,7 +94,10 @@ final class BriskEngineAdapter implements DownloadEngine {
       req.headers.set('Range', 'bytes=0-0');
       final res =
           await req.close().timeout(const Duration(seconds: 15));
-      await res.drain<void>();
+      // Headers are available now — do NOT drain the body: a server
+      // that ignores Range replies 200 with the full file, and
+      // draining would stream it all just to throw it away. The
+      // force-close in `finally` aborts the unread body.
       if (res.statusCode != 200 && res.statusCode != 206) return null;
 
       var total = 0;
@@ -132,7 +135,7 @@ final class BriskEngineAdapter implements DownloadEngine {
     } catch (_) {
       return null;
     } finally {
-      client.close();
+      client.close(force: true);
     }
   }
 

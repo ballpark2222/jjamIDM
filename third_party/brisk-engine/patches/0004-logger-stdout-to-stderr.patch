@@ -1,0 +1,16 @@
+diff --git a/lib/src/download_engine/log/logger.dart b/lib/src/download_engine/log/logger.dart
+index ORIG..PATCH 100644
+--- a/lib/src/download_engine/log/logger.dart
++++ b/lib/src/download_engine/log/logger.dart
+@@ -52,7 +52,9 @@
+     } else {
+       logBuffer.write(
+         "@${DateTime.now().millisecondsSinceEpoch} ${logLevel.name.toUpperCase()}:: $message",
+       );
+     }
+-    print("${logLevel.name}:: $message");
++    // FreeDM patch 0004: stderr, not stdout — engine-host speaks
++    // NDJSON-RPC on stdout; print() corrupts the protocol stream and
++    // makes every RpcMessage.decodeLine fail while logging is on.
++    stderr.writeln("${logLevel.name}:: $message");
+   }

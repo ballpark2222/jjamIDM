@@ -31,7 +31,7 @@ async function refresh() {
     div.className = 'task';
     const pct = t.totalBytes ? Math.round(100 * (t.receivedBytes || 0) / t.totalBytes) : 0;
     div.innerHTML = `
-      <div class="id">${id.slice(0, 12)}… — ${t.type || '?'}</div>
+      <div class="id">${id.slice(0, 12)}… — ${t.status || t.type || '?'}</div>
       <progress max="100" value="${pct}"></progress>
       <div>${fmt(t.receivedBytes)} / ${fmt(t.totalBytes)}
         <button data-a="pause">⏸</button>

@@ -30,6 +30,9 @@ final class EngineHostClient implements DownloadEngine {
       {Map<String, String>? environment}) async {
     final proc = await Process.start(argv.first, argv.sublist(1),
         environment: environment);
+    // stderr must be drained or a chatty engine (logger enabled)
+    // fills the pipe buffer and deadlocks the child process.
+    unawaited(proc.stderr.drain<void>());
     final lines = proc.stdout
         .transform(utf8.decoder)
         .transform(const LineSplitter())
