@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:freedm_application/freedm_application.dart';
 import 'package:freedm_core_domain/freedm_core_domain.dart';
+import 'package:freedm_engine_host/engine_client.dart';
+import 'package:freedm_media_api/freedm_media_api.dart';
 import 'package:freedm_update_api/freedm_update_api.dart';
 
 /// View-model between the Flutter UI and the application layer.
@@ -12,14 +14,20 @@ final class DesktopController extends ChangeNotifier {
   DesktopController({
     required DownloadScheduler scheduler,
     ComponentManager? components,
+    EngineHostClient? mediaEngine,
     List<String> componentIds = const [
       'engine.brisk', 'media.ytdlp', 'media.ffmpeg'],
     required String downloadDir,
   })  : _scheduler = scheduler,
         _components = components,
+        _mediaEngine = mediaEngine,
         _componentIds = componentIds,
         downloadDir = downloadDir {
     _sub = _scheduler.changes.listen((t) {
+      _tasks[t.id.value] = t;
+      notifyListeners();
+    });
+    _mediaSub = mediaEngine?.mediaTasks.listen((t) {
       _tasks[t.id.value] = t;
       notifyListeners();
     });
@@ -27,11 +35,14 @@ final class DesktopController extends ChangeNotifier {
 
   final DownloadScheduler _scheduler;
   final ComponentManager? _components;
+  final EngineHostClient? _mediaEngine;
   final List<String> _componentIds;
   final String downloadDir;
+  static const _classifier = MediaUrlClassifier();
 
   final _tasks = <String, DownloadTask>{};
   StreamSubscription<DownloadTask>? _sub;
+  StreamSubscription<DownloadTask>? _mediaSub;
   final _componentStates = <String, ComponentState>{};
   String? lastError;
 
@@ -60,6 +71,31 @@ final class DesktopController extends ChangeNotifier {
 
   Future<DownloadTask> addDownload(String url,
       {String? fileName}) async {
+    final uri = Uri.tryParse(url);
+    final cls =
+        uri == null ? null : _classifier.classify(uri);
+    final me = _mediaEngine;
+    if (cls != null &&
+        cls.needsResolver &&
+        me != null &&
+        me.supportsMedia) {
+      // Media page → engine-host resolves + downloads + muxes.
+      final id = await me.enqueueMedia(
+          pageUrl: url, targetDirectory: downloadDir);
+      final now = DateTime.now().toUtc();
+      final task = DownloadTask(
+        id: id,
+        kind: TaskKind.media,
+        status: DownloadStatus.created,
+        source: DownloadSource(initialUrl: url),
+        output: OutputSpec(targetDirectory: downloadDir),
+        createdAt: now,
+        updatedAt: now,
+      );
+      _tasks[id.value] = task;
+      notifyListeners();
+      return task;
+    }
     final task = await _scheduler.enqueue(DownloadRequest(
       source: DownloadSource(initialUrl: url),
       output: OutputSpec(
@@ -72,7 +108,15 @@ final class DesktopController extends ChangeNotifier {
 
   Future<void> pause(TaskId id) => _guard(() => _scheduler.pause(id));
   Future<void> resume(TaskId id) => _guard(() => _scheduler.resume(id));
-  Future<void> cancel(TaskId id) => _guard(() => _scheduler.cancel(id));
+  Future<void> cancel(TaskId id) => _guard(() async {
+        final t = _tasks[id.value];
+        if (t?.kind == TaskKind.media &&
+            _mediaEngine?.supportsMedia == true) {
+          await _mediaEngine!.cancelMedia(id);
+        } else {
+          await _scheduler.cancel(id);
+        }
+      });
   Future<void> remove(TaskId id) => _guard(() async {
         await _scheduler.remove(id);
         _tasks.remove(id.value);
@@ -126,6 +170,7 @@ final class DesktopController extends ChangeNotifier {
   @override
   Future<void> dispose() async {
     await _sub?.cancel();
+    await _mediaSub?.cancel();
     super.dispose();
   }
 }

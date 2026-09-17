@@ -47,6 +47,11 @@ final class MediaDownloadCoordinator {
 
   DownloadTask? task(TaskId id) => _tasks[id.value];
 
+  /// Resolve a media page through the configured [MediaResolver].
+  Future<MediaProbe> probe(String pageUrl,
+          {Map<String, String> headers = const {}}) =>
+      _resolver.probe(pageUrl, headers: headers);
+
   /// Create a media task and run its plan to completion (or failure).
   /// [workDir] holds intermediate video/audio/subtitle artifacts.
   Future<DownloadTask> enqueueMedia(
@@ -135,13 +140,39 @@ final class MediaDownloadCoordinator {
           _fail(task, ErrorCode.unknown, r.error ?? 'subtitle failed');
           return;
         }
+        if (r.outputPath != null) produced.add(r.outputPath!);
         task = _tasks[task.id.value]!;
+      }
+
+      // Deliver the final artifact to the user's target directory.
+      String? delivered;
+      if (produced.isNotEmpty) {
+        await Directory(task.output.targetDirectory)
+            .create(recursive: true);
+        final src = produced.last;
+        var name = plan.finalFileName;
+        if (!name.contains('.')) {
+          final dot = src.lastIndexOf('.');
+          if (dot > src.lastIndexOf(Platform.pathSeparator)) {
+            name += src.substring(dot); // keep container ext
+          }
+        }
+        final dest =
+            '${task.output.targetDirectory}${Platform.pathSeparator}$name';
+        delivered = await File(src).rename(dest).then((f) => f.path)
+            .catchError((_) async {
+          // cross-device fallback
+          await File(src).copy(dest);
+          await File(src).delete();
+          return dest;
+        });
       }
 
       task = _to(task, DownloadStatus.verifying);
       _apply(task, DownloadStatus.completed);
       _bus.publish(DownloadCompleted(task.id, _clock().toUtc(),
-          outputPath: produced.isEmpty ? null : produced.last));
+          outputPath: delivered ??
+              (produced.isEmpty ? null : produced.last)));
     } catch (e) {
       final cur = _tasks[task.id.value] ?? task;
       if (!cur.status.isTerminal) {

@@ -5,8 +5,9 @@ import 'dart:io';
 import 'package:freedm_core_domain/freedm_core_domain.dart';
 import 'package:freedm_download_api/freedm_download_api.dart';
 import 'package:freedm_engine_protocol/freedm_engine_protocol.dart';
+import 'package:freedm_persistence/freedm_persistence.dart';
 
-/// Client side of DownloadEngine Protocol v1 — a [DownloadEngine]
+/// Client side of DownloadEngine Protocol — a [DownloadEngine]
 /// backed by a spawned engine-host process speaking NDJSON-RPC.
 ///
 /// Desktop/control-plane code talks to this; the engine bundle stays
@@ -38,13 +39,25 @@ final class EngineHostClient implements DownloadEngine {
         .asBroadcastStream();
     final client = EngineHostClient._(proc, lines).._listen();
     final hello = await client._call(EngineProtocol.hello);
-    if (hello['protocol'] != EngineProtocol.version) {
+    final v = (hello['protocol'] as num?)?.toInt();
+    if (v == null || !EngineProtocol.supportedVersions.contains(v)) {
       proc.kill();
-      throw StateError(
-          'engine protocol ${hello['protocol']} != ${EngineProtocol.version}');
+      throw StateError('engine protocol $v unsupported '
+          '(client speaks ${EngineProtocol.supportedVersions})');
     }
+    client._serverProtocol = v;
     return client;
   }
+
+  /// Protocol version negotiated with the host (v1 lacks media.*).
+  int get serverProtocol => _serverProtocol;
+  int _serverProtocol = 1;
+  bool get supportsMedia => _serverProtocol >= 2;
+
+  /// Media task snapshots pushed by the host (TaskCodec-encoded).
+  final _mediaTasks =
+      StreamController<DownloadTask>.broadcast();
+  Stream<DownloadTask> get mediaTasks => _mediaTasks.stream;
 
   void _listen() {
     _lines.listen((msg) {
@@ -74,6 +87,12 @@ final class EngineHostClient implements DownloadEngine {
               unawaited(c.close());
               _taskEvents.remove(taskId);
             }
+          }
+        } else if (m.method == EngineProtocol.mediaEvent) {
+          final t = m.params['task'];
+          if (t is Map && !_mediaTasks.isClosed) {
+            _mediaTasks.add(
+                TaskCodec.decode(t.cast<String, Object?>()));
           }
         }
       }
@@ -158,6 +177,43 @@ final class EngineHostClient implements DownloadEngine {
   Future<void> setSpeedLimit(TaskId id, int? bps) async =>
       _call(EngineProtocol.taskSetSpeedLimit,
           {'taskId': id.value, 'bytesPerSecond': bps});
+
+  // ---- media pipeline (protocol v2) ----
+
+  /// Probe a media page. Returns null when the host can't serve
+  /// media (v1 host or missing tools).
+  Future<Map<String, Object?>?> probeMedia(String pageUrl) async {
+    if (!supportsMedia) return null;
+    try {
+      return await _call(
+          EngineProtocol.mediaProbe, {'pageUrl': pageUrl});
+    } on StateError {
+      return null;
+    }
+  }
+
+  /// Enqueue a media download; returns the new task id.
+  Future<TaskId> enqueueMedia({
+    required String pageUrl,
+    required String targetDirectory,
+    String? videoFormatId,
+    String? audioFormatId,
+    List<String> subtitleLangs = const [],
+    String? outputFileName,
+  }) async {
+    final r = await _call(EngineProtocol.mediaEnqueue, {
+      'pageUrl': pageUrl,
+      'targetDirectory': targetDirectory,
+      if (videoFormatId != null) 'videoFormatId': videoFormatId,
+      if (audioFormatId != null) 'audioFormatId': audioFormatId,
+      'subtitleLangs': subtitleLangs,
+      if (outputFileName != null) 'outputFileName': outputFileName,
+    });
+    return TaskId('${r['taskId']}');
+  }
+
+  Future<void> cancelMedia(TaskId id) async =>
+      _call(EngineProtocol.mediaCancel, {'taskId': id.value});
 
   @override
   Stream<EngineEvent> events(TaskId id) {

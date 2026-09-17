@@ -18,6 +18,8 @@ dependencies:
     path: ../../apps/engine-host
   freedm_event_bus:
     path: ../../packages/event-bus
+  freedm_media_api:
+    path: ../../packages/media-api
   freedm_persistence:
     path: ../../packages/persistence
   freedm_update_api:

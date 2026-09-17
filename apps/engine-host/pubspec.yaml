@@ -14,6 +14,18 @@ dependencies:
     path: ../../packages/engine-protocol
   freedm_adapter_brisk:
     path: ../../packages/adapter-brisk
+  freedm_adapter_ytdlp:
+    path: ../../packages/adapter-ytdlp
+  freedm_adapter_ffmpeg:
+    path: ../../packages/adapter-ffmpeg
+  freedm_application:
+    path: ../../packages/application
+  freedm_event_bus:
+    path: ../../packages/event-bus
+  freedm_media_api:
+    path: ../../packages/media-api
+  freedm_persistence:
+    path: ../../packages/persistence
 dev_dependencies:
   test: ^1.26.0
   lints: ^6.0.0

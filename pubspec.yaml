@@ -29,6 +29,12 @@ dependencies:
   crypto: ^3.0.7
   freedm_update_api:
     path: packages/update-api
+  freedm_media_api:
+    path: packages/media-api
+  freedm_adapter_ytdlp:
+    path: packages/adapter-ytdlp
+  freedm_adapter_ffmpeg:
+    path: packages/adapter-ffmpeg
 
 dev_dependencies:
   lints: ^6.0.0

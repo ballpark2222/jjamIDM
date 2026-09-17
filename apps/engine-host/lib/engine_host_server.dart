@@ -2,26 +2,44 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:freedm_adapter_brisk/freedm_adapter_brisk.dart';
+import 'package:freedm_application/freedm_application.dart';
 import 'package:freedm_core_domain/freedm_core_domain.dart';
 import 'package:freedm_download_api/freedm_download_api.dart';
 import 'package:freedm_engine_protocol/freedm_engine_protocol.dart';
+import 'package:freedm_media_api/freedm_media_api.dart';
+import 'package:freedm_persistence/freedm_persistence.dart';
 
-/// DownloadEngine Protocol v1 server — newline-delimited JSON-RPC on
+/// DownloadEngine Protocol v2 server — newline-delimited JSON-RPC on
 /// stdin/stdout. This process is the Engine Bundle boundary: the
 /// desktop control plane spawns it, speaks only this protocol, and can
 /// swap the whole host as a versioned component.
+///
+/// Media pipeline (v2): when [media] is provided, media.probe /
+/// media.enqueue / media.cancel are served and every media task
+/// transition is pushed as a `media.event` notification carrying a
+/// TaskCodec-encoded DownloadTask.
 final class EngineHostServer {
   EngineHostServer({
     required this.engine,
     required Directory tempRoot,
+    this.media,
     IOSink? out,
   })  : _tempRoot = tempRoot,
-        _out = out ?? stdout;
+        _out = out ?? stdout {
+    _mediaSub = media?.changes.listen((t) {
+      _send(RpcNotification(
+        method: EngineProtocol.mediaEvent,
+        params: {'task': TaskCodec.encode(t)},
+      ).encode());
+    });
+  }
 
   final DownloadEngine engine;
+  final MediaDownloadCoordinator? media;
   final Directory _tempRoot;
   final IOSink _out;
 
+  StreamSubscription<DownloadTask>? _mediaSub;
   final _eventSubs = <String, StreamSubscription<EngineEvent>>{};
   final _created = <String>{}; // taskIds known to this host
 
@@ -36,6 +54,7 @@ final class EngineHostServer {
       if (msg is! RpcRequest) continue;
       await _dispatch(msg);
     }
+    await _mediaSub?.cancel();
   }
 
   Future<void> _dispatch(RpcRequest req) async {
@@ -163,6 +182,57 @@ final class EngineHostServer {
         await probe.writeAsString('ok');
         await probe.delete();
         return const {'ok': true};
+
+      case EngineProtocol.mediaProbe:
+        final m = media;
+        if (m == null) {
+          throw UnsupportedError('media pipeline not configured');
+        }
+        final p = await m.probe(req.params['pageUrl'] as String);
+        return {
+          'supported': p.supported,
+          'title': p.title,
+          'formats': [
+            for (final f in p.formats)
+              {
+                'formatId': f.formatId,
+                'ext': f.ext,
+                'hasVideo': f.hasVideo,
+                'hasAudio': f.hasAudio,
+                'filesizeBytes': f.filesizeBytes,
+                'height': f.height,
+              },
+          ],
+        };
+
+      case EngineProtocol.mediaEnqueue:
+        final m = media;
+        if (m == null) {
+          throw UnsupportedError('media pipeline not configured');
+        }
+        final t = await m.enqueueMedia(
+          MediaSelection(
+            pageUrl: req.params['pageUrl'] as String,
+            videoFormatId: req.params['videoFormatId'] as String?,
+            audioFormatId: req.params['audioFormatId'] as String?,
+            subtitleLangs:
+                (req.params['subtitleLangs'] as List?)?.cast<String>() ??
+                    const [],
+            outputFileName: req.params['outputFileName'] as String?,
+          ),
+          workDir: req.params['workDir'] as String? ??
+              '${_tempRoot.path}${Platform.pathSeparator}media',
+          targetDirectory: req.params['targetDirectory'] as String,
+        );
+        return {'taskId': t.id.value};
+
+      case EngineProtocol.mediaCancel:
+        final m = media;
+        if (m == null) {
+          throw UnsupportedError('media pipeline not configured');
+        }
+        await m.cancel(TaskId(taskId()));
+        return const {};
 
       case EngineProtocol.shutdown:
         _send(RpcResponse.ok(req.id, const {}).encode());

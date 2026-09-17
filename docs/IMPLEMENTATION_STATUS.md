@@ -67,6 +67,23 @@
   plus pinned-key ed25519 over bundle bytes), Ed25519Signer +
   tools/component-sign/sign_bundle.dart (genkey/pubkey/sign);
   desktop app pins the dev public key in ComponentManager.
+- Full real media pipeline (tools/real-pipeline): live YouTube page
+  → yt-dlp probe → separate audio+video downloads → real ffmpeg mux
+  → ffprobe-verified mkv. The IDM-equivalent media flow end to end.
+- Real yt-dlp download path (adapter-ytdlp/tool/real_download.dart):
+  progressive bytes + progress callbacks on a live page.
+- Engine Protocol v2 (ADR 0005): media.probe/enqueue/cancel +
+  media.event (TaskCodec task snapshots). engine-host hosts the
+  MediaDownloadCoordinator with real yt-dlp/ffmpeg adapters —
+  desktop UI stays port-only. Media tasks merge into the same
+  task list; URL classifier routes media pages automatically.
+- coordinator fix: final artifact is moved into the task's
+  targetDirectory (previously stranded in workDir).
+- Windows build: VS Build Tools C++ installed; `flutter build
+  windows --release` produces freedm_desktop.exe; package.ps1
+  ships desktop/ (exe + data/ + engine-host.exe + components/
+  with yt-dlp.exe ffmpeg.exe ffprobe.exe). Smoke-tested: app
+  launches and spawns the engine host.
 
 ## In Progress
 
@@ -91,9 +108,12 @@
 - e2e: native host → engine host → brisk → disk (M5);
   EngineHostClient ↔ engine-host ↔ brisk → sha256 disk (3)
 - desktop: flutter widget + helper tests 2
-- total: 80 dart tests + 2 flutter tests green
-- real-binary: yt-dlp 2026.08.19 probe (HLS fixture + live YouTube),
-  ffmpeg 9.0.1 mux (lavfi synth → ffprobe stream check)
+- media e2e: media.probe + media.enqueue over protocol v2 → real
+  yt-dlp HLS download → ffmpeg mux → delivered file (engine-host)
+- total: 81 dart tests + 2 flutter tests green
+- real-binary: yt-dlp 2026.08.19 probe+download (HLS fixture,
+  live YouTube), ffmpeg 9.0.1 mux (lavfi synth → ffprobe),
+  full pipeline YouTube→mkv (tools/real-pipeline)
 
 ## Known Limitations (for audit notes)
 
@@ -108,8 +128,9 @@
 - Bundles verify via Ed25519SignatureVerifier (fdmsig/1). The pinned
   key is the DEV key — a release signing key + rotation story is
   still a launch decision. Minisign interop not implemented.
-- Real binaries verified: yt-dlp 2026.08.19 (probe only — real
-  download path still exercised via fakes), ffmpeg 9.0.1 (mux).
+- Real binaries verified: yt-dlp 2026.08.19 (probe + download),
+  ffmpeg 9.0.1 (mux), full pipeline end to end, media E2E over
+  protocol v2 against the local HLS fixture.
 
 ## Environment notes
 

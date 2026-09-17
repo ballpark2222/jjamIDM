@@ -38,11 +38,22 @@ Future<void> main() async {
   // Control plane ↔ engine bundle boundary: engine-host is spawned
   // and spoken to over NDJSON-RPC (DownloadEngine Protocol v1).
   final sep = Platform.pathSeparator;
+  // Packaged builds ship freedm-engine-host.exe next to the app;
+  // dev runs spawn the Dart entry point from the repo.
+  final exeDir = File(Platform.resolvedExecutable).parent.path;
+  final bundledHost =
+      File('$exeDir${sep}freedm-engine-host.exe');
   final engine = await EngineHostClient.spawn([
-    _dartExe(sep),
-    '${_repoRoot()}$sep/apps${sep}engine-host${sep}bin${sep}main.dart',
+    if (bundledHost.existsSync())
+      bundledHost.path
+    else ...[
+      _dartExe(sep),
+      '${_repoRoot()}$sep/apps${sep}engine-host${sep}bin${sep}main.dart',
+    ],
     '--temp-root',
     '$dataDir${sep}engine-temp',
+    '--data-dir',
+    dataDir,
   ]);
 
   final scheduler = DownloadScheduler(
@@ -66,6 +77,7 @@ Future<void> main() async {
   final controller = DesktopController(
     scheduler: scheduler,
     components: components,
+    mediaEngine: engine,
     downloadDir: downloadDir,
   );
   await controller.loadExisting();
