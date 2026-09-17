@@ -237,6 +237,41 @@ Backward-compatible additions only; existing clients are unaffected:
     zombie-kill loop now breaks if the id reappears in `_tasks`
     mid-loop, so a scheduler retry can't be cancelled by the loop
     cleaning up the previous incarnation.
+28. **One engine owns a queue dir** — Chrome and Edge each spawn
+    their own native host, and each cold-launches an engine on the
+    same `queueDir` + `tempRoot`. Two process-local
+    `JsonTaskRepository` writers on one `tasks.json` lose
+    read-modify-write updates, and both recoveries would re-dispatch
+    the same tasks onto shared segment temp files. The host now
+    holds an exclusive `engine.lock` in the queue dir for its
+    lifetime; a second instance exits with a clear error instead of
+    racing the owner. The OS releases the lock on process death, so
+    a stale file needs no cleanup.
+29. **Post-create failure compensates** — if `task.create` succeeded
+    but `task.subscribeEvents`/`task.start` then failed (dead
+    engine, transport drop), the parked record used to linger on the
+    queue while the extension fell back to a browser download — the
+    orphan could later be started into a duplicate download. The
+    native host now issues a best-effort `task.cancel` for the id on
+    a respawned engine.
+30. **RPC dispatch is concurrent, drained on EOF** — the host used
+    to `await` each handler inside the stdin loop, so one slow
+    `media.probe` (a yt-dlp run can take tens of seconds) stalled
+    every later request behind it, including pause/status. Clients
+    already order dependent calls by awaiting each response, so the
+    server dispatches per-request and only joins in-flight
+    dispatches (bounded 5 s) at stdin EOF, before the persistence
+    flush — the ordering contract is unchanged.
+31. **Pause covers every non-running queue state** — `pause()` used
+    to silently no-op outside `downloading*`, so pausing a
+    `created`/`ready`/`retryWait`/`urlExpired`/`authRequired` task
+    did nothing and the task still dispatched when a slot freed or
+    the backoff fired. Those states now transition to `paused`
+    (retryWait disarms its timer; `urlExpired→paused` gained a table
+    edge). `verifying`/`postProcessing` accept `cancelled` for a
+    cancel that lands inside the checksum window, and `created`
+    accepts `failed` for setup failures before the first
+    transition.
 
 ## Consequences
 

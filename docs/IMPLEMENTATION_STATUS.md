@@ -245,6 +245,41 @@
   progress frame) to real terminal events; `enqueueMedia` forwards
   `headers`.
 
+## Deep-audit round (lifecycle races / queue ownership / dispatch)
+
+- Queue ownership lock: engine-host takes an exclusive
+  `engine.lock` inside `--queue DIR` for its process lifetime — two
+  browsers (Chrome + Edge native hosts) otherwise spawn engines
+  that double-write `tasks.json` and re-dispatch the same segment
+  temp files. A second instance exits with a clear error.
+- Native host compensates orphaned parked tasks: a `download`
+  command that fails after `task.create` (subscribe/start error or
+  transport drop) issues a best-effort `task.cancel` on a respawned
+  engine so the extension's browser fallback can't produce a
+  duplicate download later.
+- Scheduler stale-task guards: `_refreshAndResume` re-reads the
+  task after the refresh await on both success and failure paths,
+  and re-checks after `replaceSource`+`start` — a cancel landing in
+  either window no longer resurrects or orphans the task. Refresh
+  cycles count against `retryPolicy.maxAttempts` (a permanently
+  dead URL can no longer loop refresh→start→403 forever).
+- `pause()` covers every pre-dispatch/parked state: `created`,
+  `resolving`, `ready`, `authRequired`, `urlExpired` transition to
+  `paused`; `retryWait` pauses and disarms the backoff timer. New
+  state-machine edges: `urlExpired→paused`, `created→failed`,
+  `verifying→cancelled`, `postProcessing→cancelled`,
+  `paused→downloadingAudio`, `ready→pausing`.
+- Media coordinator: post-start terminal check in `_engineStep` —
+  a cancel landing inside the create/start await no longer leaves
+  an orphaned engine download writing into workDir.
+- Engine-host RPC dispatch is concurrent (a slow `media.probe` no
+  longer blocks pause/status); in-flight dispatches are drained
+  with a 5 s bound on stdin EOF before the persistence flush.
+- Brisk upstream patch 0006: request-header logging reduced to
+  header names only — Cookie/Authorization values must not reach
+  `<tempRoot>/<taskId>` logs (AGENTS.md rule 8). Registry now lists
+  all six vendored patches.
+
 ## Environment notes
 
 - OS: Windows (user machine). git 2.39, node 24, python 3.10 present.
