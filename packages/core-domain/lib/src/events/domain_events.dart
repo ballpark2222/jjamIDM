@@ -39,6 +39,10 @@ final class DownloadUrlExpired extends DomainEvent {
   const DownloadUrlExpired(super.taskId, super.at);
 }
 
+final class DownloadUrlRefreshed extends DomainEvent {
+  const DownloadUrlRefreshed(super.taskId, super.at);
+}
+
 final class DownloadVerified extends DomainEvent {
   const DownloadVerified(super.taskId, super.at);
 }

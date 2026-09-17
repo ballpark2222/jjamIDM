@@ -8,6 +8,7 @@ import 'package:freedm_event_bus/freedm_event_bus.dart';
 
 import 'credential_resolver.dart';
 import 'speed_policy.dart';
+import 'url_refresh.dart';
 
 /// Application-layer orchestrator (design doc §15): owns the queue,
 /// concurrency slots, priority ordering, retry scheduling, speed-policy
@@ -22,6 +23,7 @@ final class DownloadScheduler {
     required EventBus eventBus,
     required TaskIdGenerator idGenerator,
     CredentialResolver credentials = const NullCredentialResolver(),
+    UrlRefreshResolver urlRefresher = const NullUrlRefreshResolver(),
     this.maxConcurrent = 3,
     DateTime Function()? clock,
   })  : _engine = engine,
@@ -29,6 +31,7 @@ final class DownloadScheduler {
         _bus = eventBus,
         _newId = idGenerator,
         _credentials = credentials,
+        _urlRefresher = urlRefresher,
         _clock = clock ?? DateTime.now;
 
   final DownloadEngine _engine;
@@ -36,6 +39,7 @@ final class DownloadScheduler {
   final EventBus _bus;
   final TaskIdGenerator _newId;
   final CredentialResolver _credentials;
+  final UrlRefreshResolver _urlRefresher;
   final DateTime Function() _clock;
 
   /// Max simultaneous downloads.
@@ -438,6 +442,13 @@ final class DownloadScheduler {
       _fail(t, e.error, e.detail ?? '');
       return;
     }
+    // Signed-URL expiry surfaces as urlExpired (or forbidden when a
+    // CDN answers 403 on a dead token) — refresh before retrying.
+    if (e.error == ErrorCode.urlExpired ||
+        e.error == ErrorCode.forbidden) {
+      unawaited(_refreshAndResume(t));
+      return;
+    }
     final attempts = t.failedAttempts + 1;
     if (_isRetryable(e.error) && t.retryPolicy.canRetry(attempts)) {
       _apply(t, DownloadStatus.retryWait,
@@ -454,6 +465,61 @@ final class DownloadScheduler {
       return;
     }
     _fail(t, e.error, e.detail ?? '');
+  }
+
+  /// Re-refresh an expired source URL, validate it is the same file,
+  /// and continue from existing partial bytes (design doc §20).
+  /// Safe to call manually on a task stuck in `urlExpired`.
+  Future<bool> refreshSource(TaskId id) async {
+    final t = _tasks[id.value];
+    if (t == null) return false;
+    if (t.status != DownloadStatus.urlExpired) return false;
+    await _refreshAndResume(t);
+    return true;
+  }
+
+  Future<void> _refreshAndResume(DownloadTask t) async {
+    if (t.status != DownloadStatus.urlExpired) {
+      t = _apply(t, DownloadStatus.urlExpired);
+      _bus.publish(DownloadUrlExpired(t.id, _clock().toUtc()));
+    }
+    RefreshedSource fresh;
+    try {
+      fresh = await _urlRefresher.refresh(t);
+    } catch (e) {
+      _fail(t, ErrorCode.urlExpired, 'url refresh failed: $e');
+      return;
+    }
+    if (const SameFileValidator()
+            .validate(t.source, fresh) ==
+        SameFileVerdict.conflict) {
+      _fail(t, ErrorCode.unknown,
+          'refreshed source failed same-file validation');
+      return;
+    }
+    t = t.copyWith(
+      source: t.source.copyWith(
+        currentUrl: fresh.url,
+        etag: fresh.etag ?? t.source.etag,
+        lastModified: fresh.lastModified ?? t.source.lastModified,
+        contentLength: fresh.contentLength ?? t.source.contentLength,
+        contentType: fresh.contentType ?? t.source.contentType,
+      ),
+    );
+    _tasks[t.id.value] = t;
+    _emit(t);
+    unawaited(_repo.upsert(t));
+    _bus.publish(DownloadUrlRefreshed(t.id, _clock().toUtc()));
+    t = _apply(t, DownloadStatus.downloading);
+    try {
+      await _engine.replaceSource(t.id, await _requestFor(t));
+      _subscribe(t.id);
+      await _engine.start(t.id);
+    } catch (_) {
+      // Engine-side task may already be torn down — recreate it;
+      // partial bytes resume from the engine temp dir.
+      unawaited(_reattachRunning(t));
+    }
   }
 
   bool _isRetryable(ErrorCode code) => switch (code) {

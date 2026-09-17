@@ -5,3 +5,4 @@ library;
 export 'src/credential_resolver.dart';
 export 'src/download_scheduler.dart';
 export 'src/speed_policy.dart';
+export 'src/url_refresh.dart';
