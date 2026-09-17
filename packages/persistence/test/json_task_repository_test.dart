@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:freedm_core_domain/freedm_core_domain.dart';
@@ -93,5 +94,43 @@ void main() {
     await repo.upsert(task('y'));
     expect(await repo.countByEngineBundle('brisk-engine', 'ec9e4f1'), 2);
     expect(await repo.countByEngineBundle('brisk-engine', 'other'), 0);
+  });
+
+  test('crash mid-flush window: recovers from .bak', () async {
+    var repo = await JsonTaskRepository.open(dir);
+    await repo.upsert(task('t1', status: DownloadStatus.paused));
+    await repo.pending;
+    // _flush rotates tasks.json → .bak before renaming tmp into
+    // place; a crash in that gap leaves only the .bak. open() must
+    // recover it rather than booting an empty queue.
+    final f = File('${dir.path}${Platform.pathSeparator}tasks.json');
+    await f.rename('${f.path}.bak');
+
+    repo = await JsonTaskRepository.open(dir);
+    final t = await repo.get(const TaskId('t1'));
+    expect(t, isNotNull);
+    expect(t!.status, DownloadStatus.paused);
+    // The recovered store is put back where flushes expect it.
+    expect(await f.exists(), isTrue);
+  });
+
+  test('corrupt store opens empty instead of throwing', () async {
+    await File('${dir.path}${Platform.pathSeparator}tasks.json')
+        .writeAsString('{{not json');
+    final repo = await JsonTaskRepository.open(dir);
+    expect(await repo.list(), isEmpty);
+  });
+
+  test('one unparseable entry does not lose the rest', () async {
+    final first = await JsonTaskRepository.open(dir);
+    await first.upsert(task('good'));
+    await first.pending;
+    final f = File('${dir.path}${Platform.pathSeparator}tasks.json');
+    final list = jsonDecode(await f.readAsString()) as List;
+    list.add(const {'garbage': true});
+    await f.writeAsString(jsonEncode(list));
+
+    final repo = await JsonTaskRepository.open(dir);
+    expect(await repo.get(const TaskId('good')), isNotNull);
   });
 }

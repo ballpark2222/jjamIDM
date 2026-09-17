@@ -23,16 +23,39 @@ final class JsonTaskRepository implements TaskRepository {
   static Future<JsonTaskRepository> open(Directory dir) async {
     await dir.create(recursive: true);
     final file = File(p.join(dir.path, 'tasks.json'));
-    final tasks = <String, DownloadTask>{};
+    // _flush rotates tasks.json → .bak before renaming the tmp file
+    // into place; a crash in that window leaves only .bak. Restore
+    // it instead of opening an empty store and losing the queue.
+    final bak = File('${file.path}.bak');
+    File? src;
     if (await file.exists()) {
-      final raw = await file.readAsString();
-      if (raw.trim().isNotEmpty) {
-        final list = jsonDecode(raw) as List;
-        for (final e in list) {
-          final task =
-              TaskCodec.decode((e as Map).cast<String, Object?>());
-          tasks[task.id.value] = task;
+      src = file;
+    } else if (await bak.exists()) {
+      try {
+        await bak.rename(file.path);
+        src = file;
+      } catch (_) {
+        src = bak; // locked — read the backup in place
+      }
+    }
+    final tasks = <String, DownloadTask>{};
+    if (src != null) {
+      try {
+        final raw = await src.readAsString();
+        if (raw.trim().isNotEmpty) {
+          final list = jsonDecode(raw) as List;
+          for (final e in list) {
+            try {
+              final task =
+                  TaskCodec.decode((e as Map).cast<String, Object?>());
+              tasks[task.id.value] = task;
+            } catch (_) {
+              // One unparseable entry must not cost the whole queue.
+            }
+          }
         }
+      } catch (_) {
+        // A corrupt store must not brick host startup — open empty.
       }
     }
     return JsonTaskRepository._(file, tasks);
@@ -46,7 +69,7 @@ final class JsonTaskRepository implements TaskRepository {
     final encoded = jsonEncode(
       _tasks.values.map(TaskCodec.encode).toList(),
     );
-    _writeQueue = _writeQueue.then((_) async {
+    final run = _writeQueue.then((_) async {
       final tmp = File('${_file.path}.tmp');
       await tmp.writeAsString(encoded);
       // Windows rename() cannot overwrite — rotate through .bak so a
@@ -58,7 +81,11 @@ final class JsonTaskRepository implements TaskRepository {
       }
       await tmp.rename(_file.path);
     });
-    return _writeQueue;
+    // Keep the chain alive after a failed write — a _writeQueue that
+    // completes with an error would silently swallow every later
+    // flush. The caller still observes this failure via [run].
+    _writeQueue = run.catchError((_) {});
+    return run;
   }
 
   @override

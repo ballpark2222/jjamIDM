@@ -11,6 +11,7 @@
 
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::collections::BTreeSet;
 use std::env;
 use std::io::{self, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -389,6 +390,57 @@ fn engine_call(
     }
 }
 
+/// Spawn the engine if needed, then replay task.subscribeEvents for
+/// every task the browser still cares about. A respawned process
+/// lost every subscription the previous engine had — without the
+/// replay, queue-recovered tasks keep downloading but no
+/// progress/terminal event ever reaches the browser again.
+fn ensure_engine(
+    engine: &mut Option<EngineClient>,
+    cfg: &Config,
+    subs: &BTreeSet<String>,
+) -> Result<(), String> {
+    if engine.is_some() {
+        return Ok(());
+    }
+    let mut e = spawn_engine(cfg)?;
+    for id in subs {
+        let mut p = Map::new();
+        p.insert("taskId".into(), json!(id));
+        match e.call("task.subscribeEvents", p) {
+            // RPC error = task is terminal/gone on the new host —
+            // harmless. A transport error means the pipe is dead.
+            Err(err) if err.starts_with("engine error") => {}
+            Err(err) => return Err(err),
+            Ok(_) => {}
+        }
+    }
+    *engine = Some(e);
+    Ok(())
+}
+
+/// Terminal events end the server-side subscription — the id can
+/// leave the replay set. media.event carries a TaskCodec snapshot
+/// under `task`; task.event carries taskId + type/status.
+fn terminal_task_id(ev: &Value) -> Option<&str> {
+    let p = ev.get("params")?;
+    if let Some(t) = p.get("task") {
+        let st = t.get("status").and_then(|s| s.as_str())?;
+        if matches!(st, "completed" | "failed" | "cancelled") {
+            return t.get("id").and_then(|i| i.as_str());
+        }
+        return None;
+    }
+    let ty = p.get("type").and_then(|s| s.as_str()).unwrap_or("");
+    let st = p.get("status").and_then(|s| s.as_str()).unwrap_or("");
+    if matches!(ty, "completed" | "failed")
+        || matches!(st, "completed" | "failed" | "cancelled")
+    {
+        return p.get("taskId").and_then(|i| i.as_str());
+    }
+    None
+}
+
 // --------------------------------------------------------------------
 // Command handlers
 // --------------------------------------------------------------------
@@ -437,17 +489,14 @@ fn handle(
     msg: &BrowserMessage,
     engine: &mut Option<EngineClient>,
     cfg: &Config,
+    subs: &mut BTreeSet<String>,
 ) -> Result<Value, String> {
     match msg.command.as_str() {
         "ping" => {
             let engine_ok = match engine {
                 Some(_) => engine_call(engine, "engine.hello", Map::new()).is_ok(),
-                None => match spawn_engine(cfg) {
-                    Ok(mut e) => {
-                        let ok = e.call("engine.hello", Map::new()).is_ok();
-                        *engine = Some(e);
-                        ok
-                    }
+                None => match ensure_engine(engine, cfg, subs) {
+                    Ok(()) => engine_call(engine, "engine.hello", Map::new()).is_ok(),
                     Err(_) => false,
                 },
             };
@@ -470,9 +519,7 @@ fn handle(
                 }
             }
             let headers = validated_headers(p)?;
-            if engine.is_none() {
-                *engine = Some(spawn_engine(cfg)?);
-            }
+            ensure_engine(engine, cfg, subs)?;
 
             let task_id = format!("{:x}", std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -524,6 +571,9 @@ fn handle(
             let mut sub = Map::new();
             sub.insert("taskId".into(), json!(task_id));
             engine_call(engine, "task.subscribeEvents", sub)?;
+            // Track it — an engine respawn loses this subscription
+            // and ensure_engine replays it.
+            subs.insert(task_id.clone());
             // start:false parks the task in the scheduler queue —
             // a later `start` command admits it.
             let start = p.get("start").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -545,9 +595,7 @@ fn handle(
                 .unwrap_or("");
             validate_url(url)?;
             let headers = validated_headers(&msg.payload)?;
-            if engine.is_none() {
-                *engine = Some(spawn_engine(cfg)?);
-            }
+            ensure_engine(engine, cfg, subs)?;
             let mut params = Map::new();
             params.insert("pageUrl".into(), json!(url));
             if !headers.is_empty() {
@@ -571,9 +619,7 @@ fn handle(
             // Cold-launch on demand: queue-persisted tasks survive a
             // host restart, so control commands must reach the engine
             // even when this is the first message after boot.
-            if engine.is_none() {
-                *engine = Some(spawn_engine(cfg)?);
-            }
+            ensure_engine(engine, cfg, subs)?;
             let method = format!("task.{}", msg.command);
             let mut p = Map::new();
             p.insert("taskId".into(), json!(id));
@@ -598,9 +644,7 @@ fn handle(
         }
         "status" => {
             let id = task_id_of(&msg.payload)?;
-            if engine.is_none() {
-                *engine = Some(spawn_engine(cfg)?);
-            }
+            ensure_engine(engine, cfg, subs)?;
             let mut p = Map::new();
             p.insert("taskId".into(), json!(id));
             engine_call(engine, "task.status", p)
@@ -729,11 +773,17 @@ fn main() {
 
     let mut output = io::stdout();
     let mut engine: Option<EngineClient> = None;
+    // Task ids with a live task.subscribeEvents — replayed on every
+    // engine respawn, pruned when a terminal event arrives.
+    let mut subscribed: BTreeSet<String> = BTreeSet::new();
 
     'main: loop {
         // Stream any pending engine task events to the browser.
         if let Some(e) = engine.as_ref() {
             while let Ok(ev) = e.pending_events.try_recv() {
+                if let Some(id) = terminal_task_id(&ev) {
+                    subscribed.remove(id);
+                }
                 if write_frame(&mut output, &json!({
                     "protocol": PROTOCOL_VERSION,
                     "type": "taskEvent",
@@ -770,7 +820,7 @@ fn main() {
                     respond(&msg, Err(format!(
                         "command not allowed: {}", msg.command)))
                 } else {
-                    respond(&msg, handle(&msg, &mut engine, &cfg))
+                    respond(&msg, handle(&msg, &mut engine, &cfg, &mut subscribed))
                 };
                 if write_frame(&mut output, &reply).is_err() {
                     break;

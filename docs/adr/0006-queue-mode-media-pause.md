@@ -88,6 +88,16 @@ Backward-compatible additions only; existing clients are unaffected:
    `paused`) would resurface it as `failed` on the next host
    start. `DesktopController` now routes pause/resume/cancel/
    remove by `TaskKind.media` to the `media.*` family.
+10. **Event-subscription replay (native host)** — subscriptions die
+    with the engine process: a respawned engine recovered the
+    queue but streamed nothing to the browser (popup froze, no
+    completion notifications). The host tracks subscribed ids,
+    replays `task.subscribeEvents` after every respawn, and prunes
+    ids on terminal events. (`media.event` needs no subscription —
+    the server broadcasts it unconditionally.) Queue persistence
+    hardened alongside: `tasks.json.bak` fallback for the
+    crash-mid-flush window, corrupt-store tolerance on open, and a
+    write queue that survives a failed flush.
 
 ## Consequences
 
