@@ -456,6 +456,69 @@ void main() {
     await mc.dispose();
   });
 
+  test('remove on a paused task cancels then deletes the record',
+      () async {
+    final dl = PausableDownloader();
+    final mc = MediaDownloadCoordinator(
+      engine: FakeEngine(),
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'v.mp4',
+        steps: [
+          ComponentDownloadStep(
+              componentId: 'tool.ytdlp', outputFileName: 'v.mp4'),
+        ],
+      )),
+      muxer: FakeMuxer(),
+      componentDownloaders: {'tool.ytdlp': dl},
+    );
+    final t = await mc.enqueueMedia(
+      const MediaSelection(pageUrl: 'https://x/watch'),
+      workDir: '${dir.path}/work',
+      targetDirectory: dir.path,
+    );
+    await dl.started.future.timeout(const Duration(seconds: 5));
+    await mc.pause(t.id);
+    await waitFor(mc, t.id, DownloadStatus.paused);
+
+    await mc.remove(t.id);
+    // Gone from memory AND the repo — listActive includes paused,
+    // so a retained record would resurface as failed on recover().
+    expect(mc.task(t.id), isNull);
+    expect(await repo.listActive(), isEmpty);
+    await mc.dispose();
+  });
+
+  test('remove on a completed task deletes its record', () async {
+    final engine = FakeEngine();
+    final mc = MediaDownloadCoordinator(
+      engine: engine,
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'v.mp4',
+        steps: [
+          EngineDownloadStep(
+              url: 'http://x/v', outputFileName: 'v.mp4',
+              role: 'video'),
+        ],
+      )),
+      muxer: FakeMuxer(),
+    );
+    engine._lastOutput = '${dir.path}/work/v.mp4';
+    final t = await mc.enqueueMedia(
+      const MediaSelection(pageUrl: 'https://x/watch'),
+      workDir: '${dir.path}/work',
+      targetDirectory: dir.path,
+    );
+    await waitFor(mc, t.id, DownloadStatus.completed);
+    await mc.remove(t.id);
+    expect(mc.task(t.id), isNull);
+    expect(await repo.list(), isEmpty);
+    await mc.dispose();
+  });
+
   test('missing component downloader fails cleanly', () async {
     final mc = MediaDownloadCoordinator(
       engine: FakeEngine(),

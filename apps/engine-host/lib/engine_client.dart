@@ -272,6 +272,12 @@ final class EngineHostClient implements DownloadEngine {
   Future<void> resumeMedia(TaskId id) async =>
       _call(EngineProtocol.mediaResume, {'taskId': id.value});
 
+  /// Delete a media task's record on the host — cancels in-flight
+  /// work first. Without this the record persisted in the media
+  /// repo and resurfaced as failed on the next host start.
+  Future<void> removeMedia(TaskId id) async =>
+      _call(EngineProtocol.mediaRemove, {'taskId': id.value});
+
   /// Raw task.status result — `known` says whether the host still
   /// tracks the task; queue mode also reports the scheduler status.
   Future<Map<String, Object?>> status(TaskId id) async =>

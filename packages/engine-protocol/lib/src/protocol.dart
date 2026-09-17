@@ -39,6 +39,10 @@ final class EngineProtocol {
   // resume from their .part artifacts on resume.
   static const String mediaPause = 'media.pause';
   static const String mediaResume = 'media.resume';
+  // v2 additive (ADR-0006): delete a media task's record — cancels
+  // in-flight work first. Without it a removed task's record
+  // persisted in the media repo and resurfaced on recovery.
+  static const String mediaRemove = 'media.remove';
 
   // server → client notifications
   static const String taskEvent = 'task.event';

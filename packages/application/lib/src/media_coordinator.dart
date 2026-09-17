@@ -130,6 +130,20 @@ final class MediaDownloadCoordinator {
     _runs.remove(id.value);
   }
 
+  /// Remove a media task entirely — cancels any in-flight work,
+  /// then drops the record and run state so it neither lists nor
+  /// recovers on the next host start. Terminal tasks delete
+  /// straight away; workDir artifacts under temp-root are left
+  /// for the temp cleaner (the dir is shared across tasks).
+  Future<void> remove(TaskId id) async {
+    final t = _tasks[id.value];
+    if (t == null) return;
+    if (!t.status.isTerminal) await cancel(id);
+    _tasks.remove(id.value);
+    _runs.remove(id.value);
+    await _repo.delete(id);
+  }
+
   /// Pause a media task. Only download steps are pausable — a pause
   /// requested during resolve/mux lands at the next step boundary.
   /// Engine steps pause in place; component steps kill the yt-dlp

@@ -106,19 +106,32 @@ final class DesktopController extends ChangeNotifier {
     return task;
   }
 
-  Future<void> pause(TaskId id) => _guard(() => _scheduler.pause(id));
-  Future<void> resume(TaskId id) => _guard(() => _scheduler.resume(id));
+  /// Media tasks live in the engine host's media coordinator, not
+  /// the scheduler — routing them through the scheduler hits
+  /// 'unknown task' and silently no-ops.
+  bool _isMedia(TaskId id) =>
+      _tasks[id.value]?.kind == TaskKind.media &&
+      _mediaEngine?.supportsMedia == true;
+
+  Future<void> pause(TaskId id) => _guard(() => _isMedia(id)
+      ? _mediaEngine!.pauseMedia(id)
+      : _scheduler.pause(id));
+  Future<void> resume(TaskId id) => _guard(() => _isMedia(id)
+      ? _mediaEngine!.resumeMedia(id)
+      : _scheduler.resume(id));
   Future<void> cancel(TaskId id) => _guard(() async {
-        final t = _tasks[id.value];
-        if (t?.kind == TaskKind.media &&
-            _mediaEngine?.supportsMedia == true) {
+        if (_isMedia(id)) {
           await _mediaEngine!.cancelMedia(id);
         } else {
           await _scheduler.cancel(id);
         }
       });
   Future<void> remove(TaskId id) => _guard(() async {
-        await _scheduler.remove(id);
+        if (_isMedia(id)) {
+          await _mediaEngine!.removeMedia(id);
+        } else {
+          await _scheduler.remove(id);
+        }
         _tasks.remove(id.value);
         notifyListeners();
       });

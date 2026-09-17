@@ -307,6 +307,14 @@ final class EngineHostServer {
         await m.resume(TaskId(taskId()));
         return const {};
 
+      case EngineProtocol.mediaRemove:
+        final m = media;
+        if (m == null) {
+          throw UnsupportedError('media pipeline not configured');
+        }
+        await m.remove(TaskId(taskId()));
+        return const {};
+
       case EngineProtocol.shutdown:
         _send(RpcResponse.ok(req.id, const {}).encode());
         for (final s in _eventSubs.values) {

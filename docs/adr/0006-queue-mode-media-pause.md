@@ -79,6 +79,16 @@ Backward-compatible additions only; existing clients are unaffected:
      so existing subscribers (queue-mode `task.event` forwarding)
      aren't orphaned.
 
+9. **`media.remove`** — deletes a media task's record (cancelling
+   in-flight work first). Without it the desktop UI had no way to
+   remove a media task: `pause`/`resume`/`remove` were routed to
+   the download scheduler, which never saw `media.enqueue` tasks
+   and threw `unknown task`; and even a routed cancel left the
+   record in the media repo, where `listActive` (which includes
+   `paused`) would resurface it as `failed` on the next host
+   start. `DesktopController` now routes pause/resume/cancel/
+   remove by `TaskKind.media` to the `media.*` family.
+
 ## Consequences
 
 - Browser-triggered downloads now get concurrency limits (default
