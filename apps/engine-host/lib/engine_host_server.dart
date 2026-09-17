@@ -371,7 +371,12 @@ final class EngineHostServer {
       }
       _eventSubs[taskId] = s.changes.listen((t) {
         if (t.id.value != taskId) return;
-        if (t.status.isActive) attachEngine();
+        // Retry on EVERY change until attached — the engine-side
+        // 'completed' event carries the real outputPath (probe-
+        // derived names/extensions differ from the synthesized
+        // fallback), and a fast download can finish between the
+        // 'downloading' emission and the next scheduler change.
+        attachEngine();
         emitStatus(t);
         if (t.status.isTerminal) {
           engSub?.cancel();
@@ -380,7 +385,7 @@ final class EngineHostServer {
       });
       final cur = s.task(TaskId(taskId));
       if (cur != null) {
-        if (cur.status.isActive) attachEngine();
+        attachEngine();
         emitStatus(cur);
         if (cur.status.isTerminal) _eventSubs.remove(taskId)?.cancel();
       }
