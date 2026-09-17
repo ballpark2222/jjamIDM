@@ -35,4 +35,4 @@ data/
 downloads/
 
 # RC packaging output
-release/
+/release/
