@@ -212,18 +212,45 @@ final class DownloadScheduler {
   Future<void> pause(TaskId id) async {
     final t = _tasks[id.value];
     if (t == null) throw StateError('unknown task ${id.value}');
-    if (t.status != DownloadStatus.downloading &&
-        t.status != DownloadStatus.downloadingVideo &&
-        t.status != DownloadStatus.downloadingAudio) {
-      return; // nothing in-flight to pause
+    switch (t.status) {
+      case DownloadStatus.created ||
+          DownloadStatus.resolving ||
+          DownloadStatus.ready ||
+          DownloadStatus.authRequired ||
+          DownloadStatus.urlExpired:
+        // Not dispatched yet — hold it paused so _pump can't pick it
+        // up; a silent no-op here meant a queued task the user tried
+        // to pause started anyway when a slot freed.
+        _apply(t, DownloadStatus.paused);
+        _bus.publish(DownloadPaused(id, _clock().toUtc()));
+      case DownloadStatus.retryWait:
+        // Mid-backoff: disarm the timer or it fires under the pause.
+        _retryTimers.remove(id.value)?.cancel();
+        _apply(t, DownloadStatus.paused);
+        _bus.publish(DownloadPaused(id, _clock().toUtc()));
+      case DownloadStatus.downloading ||
+          DownloadStatus.downloadingVideo ||
+          DownloadStatus.downloadingAudio:
+        _apply(t, DownloadStatus.pausing);
+        await _engine.pause(id);
+      default:
+        break; // nothing in-flight to pause
     }
-    _apply(t, DownloadStatus.pausing);
-    await _engine.pause(id);
   }
 
   Future<void> resume(TaskId id) async {
     final t = _tasks[id.value];
     if (t == null) throw StateError('unknown task ${id.value}');
+    if (t.status == DownloadStatus.pausing) {
+      // Pause is in flight — supersede it (the adapter abandons its
+      // ack loop on resume and re-sends start). A pause that already
+      // landed can still emit EnginePaused → pausing→paused is legal
+      // and the next resume() takes the normal path.
+      _apply(t, DownloadStatus.downloading);
+      _bus.publish(DownloadResumed(id, _clock().toUtc()));
+      await _engine.resume(id);
+      return;
+    }
     if (t.status == DownloadStatus.paused) {
       final resumed = _apply(t, DownloadStatus.downloading);
       _bus.publish(DownloadResumed(id, _clock().toUtc()));
@@ -438,6 +465,9 @@ final class DownloadScheduler {
           }
           _apply(_tasks[id.value]!, DownloadStatus.paused);
           _bus.publish(DownloadPaused(id, _clock().toUtc()));
+          // paused frees the concurrency slot — without a pump here
+          // queued `ready` tasks waited for an unrelated event.
+          _pump();
         }
       case EngineCompleted():
         unawaited(_complete(t, e));
@@ -474,6 +504,11 @@ final class DownloadScheduler {
     final checksum = t.output.checksum;
     if (checksum != null && e.outputPath != null) {
       final ok = await _verifyChecksum(e.outputPath!, checksum);
+      // Cancel could have landed during the hashing await — the
+      // local t is stale; bail on the terminal record.
+      final cur = _tasks[t.id.value];
+      if (cur == null || cur.status.isTerminal) return;
+      t = cur;
       if (!ok) {
         _fail(t, ErrorCode.checksumMismatch,
             'checksum mismatch on ${e.outputPath}');
@@ -562,46 +597,76 @@ final class DownloadScheduler {
 
   Future<void> _refreshAndResume(DownloadTask t) async {
     if (t.status != DownloadStatus.urlExpired) {
-      t = _apply(t, DownloadStatus.urlExpired);
+      // Refresh cycles share the retry budget — a URL that keeps
+      // arriving dead-on-refresh (403s again immediately) otherwise
+      // loops refresh→start→403 forever without ever counting an
+      // attempt.
+      final attempts = t.failedAttempts + 1;
+      if (!t.retryPolicy.canRetry(attempts)) {
+        _fail(t, ErrorCode.urlExpired,
+            'url refresh attempts exhausted ($attempts)');
+        return;
+      }
+      t = _apply(t, DownloadStatus.urlExpired,
+          failedAttempts: attempts);
       _bus.publish(DownloadUrlExpired(t.id, _clock().toUtc()));
     }
     RefreshedSource fresh;
     try {
       fresh = await _urlRefresher.refresh(t);
     } catch (e) {
-      _fail(t, ErrorCode.urlExpired, 'url refresh failed: $e');
+      // Same staleness rule as the success path — a cancel that
+      // landed during the refresh must not be overwritten by a
+      // failed transition on a dead record.
+      final stale = _tasks[t.id.value];
+      if (stale == null || stale.status.isTerminal) return;
+      _fail(stale, ErrorCode.urlExpired, 'url refresh failed: $e');
       return;
     }
+    // Cancel/remove may have landed while the refresh was in flight —
+    // the local `t` is stale; bail instead of resurrecting the task.
+    var cur = _tasks[t.id.value];
+    if (cur == null || cur.status.isTerminal) return;
     if (const SameFileValidator()
-            .validate(t.source, fresh) ==
+            .validate(cur.source, fresh) ==
         SameFileVerdict.conflict) {
-      _fail(t, ErrorCode.unknown,
+      _fail(cur, ErrorCode.unknown,
           'refreshed source failed same-file validation');
       return;
     }
-    t = t.copyWith(
-      source: t.source.copyWith(
+    cur = cur.copyWith(
+      source: cur.source.copyWith(
         currentUrl: fresh.url,
-        etag: fresh.etag ?? t.source.etag,
-        lastModified: fresh.lastModified ?? t.source.lastModified,
-        contentLength: fresh.contentLength ?? t.source.contentLength,
-        contentType: fresh.contentType ?? t.source.contentType,
+        etag: fresh.etag ?? cur.source.etag,
+        lastModified: fresh.lastModified ?? cur.source.lastModified,
+        contentLength: fresh.contentLength ?? cur.source.contentLength,
+        contentType: fresh.contentType ?? cur.source.contentType,
       ),
     );
-    _tasks[t.id.value] = t;
-    _emit(t);
-    _lastWrite = _repo.upsert(t);
+    _tasks[cur.id.value] = cur;
+    _emit(cur);
+    _lastWrite = _repo.upsert(cur);
     unawaited(_lastWrite);
-    _bus.publish(DownloadUrlRefreshed(t.id, _clock().toUtc()));
-    t = _apply(t, DownloadStatus.downloading);
+    _bus.publish(DownloadUrlRefreshed(cur.id, _clock().toUtc()));
+    cur = _apply(cur, DownloadStatus.downloading);
     try {
-      await _engine.replaceSource(t.id, await _requestFor(t));
-      _subscribe(t.id);
-      await _engine.start(t.id);
+      await _engine.replaceSource(cur.id, await _requestFor(cur));
+      _subscribe(cur.id);
+      await _engine.start(cur.id);
+      // Cancel racing the replace+start left a running engine task
+      // on a terminal record — same post-start guard as _dispatch.
+      final post = _tasks[cur.id.value];
+      if (post == null || post.status.isTerminal) {
+        try {
+          await _engine.cancel(cur.id);
+        } catch (_) {}
+      }
     } catch (_) {
       // Engine-side task may already be torn down — recreate it;
       // partial bytes resume from the engine temp dir.
-      unawaited(_reattachRunning(t));
+      final post = _tasks[cur.id.value];
+      if (post == null || post.status.isTerminal) return;
+      unawaited(_reattachRunning(post));
     }
   }
 

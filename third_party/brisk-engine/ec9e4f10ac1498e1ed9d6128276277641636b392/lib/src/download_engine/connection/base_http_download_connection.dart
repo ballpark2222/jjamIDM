@@ -330,7 +330,11 @@ abstract class BaseHttpDownloadConnection {
     // FreeDM patch 0002: caller-supplied headers (cookie/referer/auth)
     // merged after engine defaults so they may override them.
     request.headers.addAll(downloadItem.headers);
-    logger?.info("Request headers: ${request.headers}");
+    // FreeDM patch 0006: log header NAMES only — caller-supplied
+    // headers carry cookies/authorization tokens and must never
+    // reach disk logs (AGENTS.md rule 8).
+    logger?.info(
+        "Request headers: ${request.headers.keys.join(', ')}");
     totalRequestWriteProgress = downloadProgress;
     logger?.info("=========== Total connection temp files ===========");
     getConnectionTempFilesSorted().forEach(

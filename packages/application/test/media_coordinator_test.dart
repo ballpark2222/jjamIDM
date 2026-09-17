@@ -12,6 +12,7 @@ import 'package:test/test.dart';
 final class FakeEngine implements DownloadEngine {
   final controllers = <String, StreamController<EngineEvent>>{};
   final started = <String>[];
+  final requests = <String, DownloadRequest>{};
 
   @override
   String get providerId => 'engine.fake';
@@ -40,6 +41,7 @@ final class FakeEngine implements DownloadEngine {
     // Broadcast like the real adapter — a paused engine step
     // re-subscribes on resume.
     controllers[id.value] = StreamController<EngineEvent>.broadcast();
+    requests[id.value] = r;
     return EngineTaskHandle(engineTaskId: id.value);
   }
   @override
@@ -47,13 +49,19 @@ final class FakeEngine implements DownloadEngine {
     started.add(id.value);
     // Write the output file and complete immediately — the deliver
     // stage copies produced.last, so the fake artifact must exist.
-    if (_lastOutput != null) {
-      final f = File(_lastOutput!);
+    // Default lands under the request's target dir (= the task's
+    // private workDir) so deliver/rename exercises a real file.
+    final out = _lastOutput ??
+        (requests[id.value] != null
+            ? '${requests[id.value]!.output.targetDirectory}'
+                '${Platform.pathSeparator}${id.value}.bin'
+            : null);
+    if (out != null) {
+      final f = File(out);
       await f.parent.create(recursive: true);
       await f.writeAsBytes([1]);
     }
-    controllers[id.value]!.add(
-        EngineCompleted(outputPath: _lastOutput));
+    controllers[id.value]!.add(EngineCompleted(outputPath: out));
   }
   String? _lastOutput;
   @override
@@ -192,6 +200,22 @@ final class PausableDownloader implements ComponentDownloader {
   }
 }
 
+/// start() parks on [gate] — opens the cancel-during-engine-start
+/// window the coordinator's post-start guard exists to close.
+final class GatedStartEngine extends FakeEngine {
+  final gate = Completer<void>();
+  final cancelled = <String>[];
+  @override
+  Future<void> start(TaskId id) async {
+    started.add(id.value);
+    await gate.future;
+  }
+  @override
+  Future<void> cancel(TaskId id) async {
+    cancelled.add(id.value);
+  }
+}
+
 /// Mux that blocks until [release] — lets a test request a pause
 /// while the task sits in `muxing`, which has no direct `pausing`
 /// edge in the base table.
@@ -247,7 +271,10 @@ void main() {
     });
     final cur = mc.task(id);
     if (cur != null && cur.status == status) c.complete(cur);
-    final t = await c.future.timeout(const Duration(seconds: 5));
+    // Generous bound — the suite runs test files in parallel and a
+    // loaded box can stretch the resolve→steps→deliver chain well
+    // past a few seconds without anything being wrong.
+    final t = await c.future.timeout(const Duration(seconds: 20));
     await sub.cancel();
     return t;
   }
@@ -383,6 +410,49 @@ void main() {
     // create would have re-probed the URL and reset its item.
     expect(engine.resumed, [t.id.value]);
     expect(engine.started, [t.id.value]);
+    await mc.dispose();
+  });
+
+  test('cancel during engine start stops the just-started step',
+      () async {
+    final engine = GatedStartEngine();
+    final mc = MediaDownloadCoordinator(
+      engine: engine,
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'v.mp4',
+        steps: [
+          EngineDownloadStep(
+              url: 'http://x/v', outputFileName: 'v.mp4', role: 'video'),
+        ],
+      )),
+      muxer: FakeMuxer(),
+    );
+    final t = await mc.enqueueMedia(
+      const MediaSelection(pageUrl: 'https://x/watch'),
+      workDir: '${dir.path}/work',
+      targetDirectory: dir.path,
+    );
+    // Wait until engine.start is actually in flight on the gate.
+    for (var i = 0; i < 100 && engine.started.isEmpty; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(engine.started, contains(t.id.value));
+
+    await mc.cancel(t.id);
+    await waitFor(mc, t.id, DownloadStatus.cancelled);
+
+    // Release the start — without the post-start guard the engine
+    // task would keep downloading into workDir, untracked.
+    engine.gate.complete();
+    for (var i = 0; i < 100 && engine.cancelled.length < 2; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(engine.cancelled.length, greaterThanOrEqualTo(2),
+        reason: 'user cancel + post-start guard cancel expected');
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(mc.task(t.id)!.status, DownloadStatus.cancelled);
     await mc.dispose();
   });
 
@@ -598,6 +668,101 @@ void main() {
         list.singleWhere((e) => e.id.value == 'm-stale');
     expect(t.status, DownloadStatus.failed);
     expect(t.kind, TaskKind.media);
+    await mc.dispose();
+  });
+
+  test('each task gets a private workDir under the shared root — '
+      'same-named outputs cannot cross-pollinate', () async {
+    final engine = FakeEngine();
+    final mc = MediaDownloadCoordinator(
+      engine: engine,
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'v.mp4',
+        steps: [
+          EngineDownloadStep(
+              url: 'http://x/v', outputFileName: 'v.mp4',
+              role: 'video'),
+        ],
+      )),
+      muxer: FakeMuxer(),
+    );
+    final a = await mc.enqueueMedia(
+        const MediaSelection(pageUrl: 'https://x/1'),
+        workDir: '${dir.path}/work',
+        targetDirectory: dir.path);
+    final b = await mc.enqueueMedia(
+        const MediaSelection(pageUrl: 'https://x/2'),
+        workDir: '${dir.path}/work',
+        targetDirectory: dir.path);
+    await waitFor(mc, a.id, DownloadStatus.completed);
+    await waitFor(mc, b.id, DownloadStatus.completed);
+    final da = engine.requests[a.id.value]!.output.targetDirectory;
+    final db = engine.requests[b.id.value]!.output.targetDirectory;
+    expect(da, isNot(db));
+    expect(da, endsWith(a.id.value));
+    expect(db, endsWith(b.id.value));
+    await mc.dispose();
+  });
+
+  test('unwritable workDir fails the task instead of stranding it '
+      'in created', () async {
+    final blocker = File('${dir.path}${Platform.pathSeparator}file')
+      ..writeAsBytesSync([0]);
+    final mc = MediaDownloadCoordinator(
+      engine: FakeEngine(),
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'v.mp4',
+        steps: [
+          EngineDownloadStep(
+              url: 'http://x/v', outputFileName: 'v.mp4',
+              role: 'video'),
+        ],
+      )),
+      muxer: FakeMuxer(),
+    );
+    final t = await mc.enqueueMedia(
+        const MediaSelection(pageUrl: 'https://x/1'),
+        workDir: blocker.path, // a file — dir create must throw
+        targetDirectory: dir.path);
+    final done = await waitFor(mc, t.id, DownloadStatus.failed);
+    expect(done.status, DownloadStatus.failed);
+    await mc.dispose();
+  });
+
+  test('same finalFileName twice delivers to unique names — never '
+      'overwrites', () async {
+    // Two tasks producing the same output name must collide-rename
+    // (name (1).ext): a copy fallback that overwrote the existing
+    // file would silently destroy the first download.
+    final dl = FakeDownloader();
+    final mc = MediaDownloadCoordinator(
+      engine: FakeEngine(),
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'v.mp4',
+        steps: [
+          ComponentDownloadStep(
+              componentId: 'tool.ytdlp', outputFileName: 'v.mp4'),
+        ],
+      )),
+      muxer: FakeMuxer(),
+      componentDownloaders: {'tool.ytdlp': dl},
+    );
+    const sel = MediaSelection(pageUrl: 'https://x/watch');
+    final t1 = await mc.enqueueMedia(sel,
+        workDir: '${dir.path}/work', targetDirectory: dir.path);
+    final t2 = await mc.enqueueMedia(sel,
+        workDir: '${dir.path}/work', targetDirectory: dir.path);
+    await waitFor(mc, t1.id, DownloadStatus.completed);
+    await waitFor(mc, t2.id, DownloadStatus.completed);
+    expect(File('${dir.path}/v.mp4').existsSync(), isTrue);
+    expect(File('${dir.path}/v (1).mp4').existsSync(), isTrue,
+        reason: 'second delivery overwrote the first file');
     await mc.dispose();
   });
 }

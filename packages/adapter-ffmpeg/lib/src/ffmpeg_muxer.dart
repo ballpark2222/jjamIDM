@@ -11,10 +11,14 @@ final class FfmpegMuxer implements MediaMuxer {
   FfmpegMuxer({
     required List<String> command,
     this.timeout = const Duration(minutes: 10),
+    this.environment,
   }) : _command = command;
 
   final List<String> _command;
   final Duration timeout;
+
+  /// Extra environment for the child process (test hooks, proxies).
+  final Map<String, String>? environment;
 
   @override
   String get providerId => 'media.ffmpeg';
@@ -24,6 +28,7 @@ final class FfmpegMuxer implements MediaMuxer {
       _command.first,
       [..._command.sublist(1), ...args],
       mode: ProcessStartMode.normal,
+      environment: environment,
     );
     final out = StringBuffer();
     final err = StringBuffer();
@@ -49,23 +54,51 @@ final class FfmpegMuxer implements MediaMuxer {
     return (r.stdout as String).split('\n').first.trim();
   }
 
+  /// MuxStep inputs/outputs are usually bare filenames that live in
+  /// the coordinator's per-task workDir. Resolve them explicitly so
+  /// ffmpeg's working directory is irrelevant, and return the real
+  /// output path — callers treat MuxResult.outputPath as absolute.
+  static bool _isAbs(String path) =>
+      path.startsWith('/') ||
+      path.startsWith(r'\\') ||
+      RegExp(r'^[A-Za-z]:[\\/]').hasMatch(path);
+
+  static String _resolve(String path, String workDir) =>
+      _isAbs(path) || workDir == '.' || workDir.isEmpty
+          ? path
+          : '$workDir${Platform.pathSeparator}$path';
+
+  /// mov_text is the only subtitle codec legal in mp4/mov — in mkv
+  /// ffmpeg must transcode to srt (and webm only accepts webvtt).
+  static String _subCodecFor(String outPath) {
+    final dot = outPath.lastIndexOf('.');
+    final ext =
+        dot < 0 ? '' : outPath.substring(dot + 1).toLowerCase();
+    return switch (ext) {
+      'mkv' || 'mka' => 'srt',
+      'webm' => 'webvtt',
+      _ => 'mov_text',
+    };
+  }
+
   @override
   Future<MuxResult> mux(MuxStep step, {String workDir = '.'}) async {
     if (step.inputs.isEmpty) {
       return const MuxResult(ok: false, error: 'no inputs');
     }
+    final outPath = _resolve(step.outputFileName, workDir);
     final args = <String>[
       '-y',
-      for (final i in step.inputs) ...['-i', i],
-      for (final s in step.subtitleInputs) ...['-i', s],
+      for (final i in step.inputs) ...['-i', _resolve(i, workDir)],
+      for (final s in step.subtitleInputs) ...['-i', _resolve(s, workDir)],
       '-c', 'copy',
-      '-c:s', 'mov_text',
-      step.outputFileName,
+      '-c:s', _subCodecFor(outPath),
+      outPath,
     ];
     try {
       final r = await _run(args);
       return r.exitCode == 0
-          ? MuxResult(ok: true, outputPath: step.outputFileName)
+          ? MuxResult(ok: true, outputPath: outPath)
           : MuxResult(ok: false, error: r.stderr as String);
     } catch (e) {
       return MuxResult(ok: false, error: '$e');
@@ -81,9 +114,12 @@ final class FfmpegMuxer implements MediaMuxer {
     if (subtitlePaths.isEmpty) {
       return const MuxResult(ok: false, error: 'no subtitles');
     }
+    // Keep the input's container — forcing .mp4 mislabels an mkv
+    // (and mov_text isn't a legal subtitle codec there anyway).
+    final m = RegExp(r'\.[A-Za-z0-9]+$').firstMatch(videoPath);
     final out = outputPath ??
-        videoPath.replaceFirst(
-            RegExp(r'\.[A-Za-z0-9]+$'), '.subtitled.mp4');
+        videoPath.replaceFirst(RegExp(r'\.[A-Za-z0-9]+$'),
+            '.subtitled${m?.group(0) ?? '.mp4'}');
     return mux(MuxStep(
       inputs: [videoPath],
       outputFileName: out,

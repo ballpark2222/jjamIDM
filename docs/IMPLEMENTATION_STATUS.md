@@ -213,6 +213,38 @@
   vendored Brisk token-bucket patch), clipboard watch (needs a
   native-side poller — MV3 can't poll the clipboard).
 
+## Reliability round (subscription replay / media persistence / shutdown drain)
+
+- `media.remove` + `media.list` (protocol v2 additive): media tasks
+  are persisted in `<dataDir>\media-tasks`; desktop merges them into
+  the UI at startup (newer live state wins by `updatedAt`), and
+  remove cancels active work then deletes the durable record so
+  removed tasks can't resurface.
+- Native host subscription replay: engine respawn drops every
+  `task.subscribeEvents` — `ensure_engine` replays `subs`, terminal
+  events prune it, and start/pause/resume/cancel re-subscribe
+  idempotently first (queue-persisted tasks have no in-memory sub
+  after a host restart — without this, their events never reach the
+  browser).
+- Shutdown ordering: server emits the `shutdown` ack then drains
+  pending writes with a bounded flush; client waits 12s for exit
+  (worst-case drain 2×5s) before killing; stdin EOF also flushes
+  bounded. Scheduler `flush()` drains the debounced repo write
+  chain — desktop calls it before engine shutdown on app exit.
+- `JsonTaskRepository`: chained write queue, `.bak` fallback,
+  per-line corrupt tolerance, and writeQueue surviving a failed
+  write.
+- Scheduler recovery rearms `retryWait` timers and restarts
+  `urlExpired` tasks through `_refreshAndResume`.
+- Browser engine data dir split: `install.ps1` passes
+  `--data-dir <dataDir>\browser` so the browser-spawned engine and
+  the desktop app never share one JSON task repository.
+- Client hardening: `EngineHostClient` fails pending calls and
+  closes task/media streams on host death; `_eventFromJson` maps
+  queue-mode synthesized status frames (`status:'completed'` on a
+  progress frame) to real terminal events; `enqueueMedia` forwards
+  `headers`.
+
 ## Environment notes
 
 - OS: Windows (user machine). git 2.39, node 24, python 3.10 present.

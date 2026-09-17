@@ -56,6 +56,15 @@ final class MediaUrlClassifier {
     'application/dash+xml',
   };
 
+  /// Playlist/manifest extensions — these are never "the file";
+  /// engine-downloading one saves playlist text, not media. The
+  /// media pipeline must resolve them into real streams instead.
+  static const manifestExtensions = {'m3u8', 'mpd'};
+
+  /// Whether [url] points at a manifest rather than a media file.
+  bool isManifest(Uri url) =>
+      manifestExtensions.contains(_ext(url));
+
   MediaClassification classify(Uri url, {String? contentType}) {
     if (url.scheme != 'http' && url.scheme != 'https') {
       return const MediaClassification(MediaUrlKind.directFile,

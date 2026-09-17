@@ -245,6 +245,93 @@ void main() {
     await s2.dispose();
   });
 
+  test('cancel during an in-flight refresh stays cancelled', () async {
+    final gate = Completer<RefreshedSource>();
+    final e = FakeEngine();
+    final s = sched(e, _PendingRefresher(gate.future));
+    final t = await s.enqueue(req());
+    await until(s, t.id, (x) => x.status == DownloadStatus.downloading);
+
+    e.emit(t.id, const EngineFailed(ErrorCode.urlExpired));
+    await until(
+        s, t.id, (x) => x.status == DownloadStatus.urlExpired);
+    // The refresh is parked on the gate — cancel underneath it.
+    await s.cancel(t.id);
+    await until(
+        s, t.id, (x) => x.status == DownloadStatus.cancelled);
+
+    gate.complete(const RefreshedSource(
+      url: 'http://x/f?token=NEW',
+      etag: '"stable"',
+      contentLength: 1000,
+    ));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    // Stale post-refresh writes must not resurrect the terminal task
+    // or restart the engine side.
+    expect(s.task(t.id)!.status, DownloadStatus.cancelled);
+    expect(e.replaced, isEmpty);
+    await s.dispose();
+  });
+
+  test('cancel during a refresh that then fails stays cancelled',
+      () async {
+    final gate = Completer<RefreshedSource>();
+    final e = FakeEngine();
+    final s = sched(e, _PendingRefresher(gate.future));
+    final t = await s.enqueue(req());
+    await until(s, t.id, (x) => x.status == DownloadStatus.downloading);
+
+    e.emit(t.id, const EngineFailed(ErrorCode.urlExpired));
+    await until(
+        s, t.id, (x) => x.status == DownloadStatus.urlExpired);
+    await s.cancel(t.id);
+    await until(
+        s, t.id, (x) => x.status == DownloadStatus.cancelled);
+
+    // A refresh error arriving after the cancel must not throw
+    // cancelled→failed inside the unawaited continuation either.
+    gate.completeError(StateError('offline mid-cancel'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(s.task(t.id)!.status, DownloadStatus.cancelled);
+    await s.dispose();
+  });
+
+  test('url refresh cycles share the retry budget — no infinite loop',
+      () async {
+    final e = FakeEngine();
+    final r = FakeRefresher(const RefreshedSource(
+      url: 'http://x/f?token=NEW',
+      etag: '"stable"',
+      contentLength: 1000,
+    ));
+    final s = DownloadScheduler(
+      engine: e,
+      repository: repo,
+      eventBus: bus,
+      idGenerator: nextId,
+      urlRefresher: r,
+    );
+    // maxAttempts: 2 — one refresh cycle may run, the next
+    // urlExpired report must exhaust the budget instead of looping
+    // refresh→start→403 forever.
+    final t = await s.enqueue(req(),
+        retryPolicy: const RetryPolicy(maxAttempts: 2));
+    await until(s, t.id, (x) => x.status == DownloadStatus.downloading);
+
+    e.emit(t.id, const EngineFailed(ErrorCode.urlExpired));
+    await until(s, t.id,
+        (x) => x.status == DownloadStatus.downloading &&
+            x.failedAttempts == 1);
+
+    // The refreshed URL dies again — budget is spent → terminal.
+    e.emit(t.id, const EngineFailed(ErrorCode.forbidden));
+    final failed =
+        await until(s, t.id, (x) => x.status == DownloadStatus.failed);
+    expect(failed.lastError, ErrorCode.urlExpired);
+    expect(r.calls, 1);
+    await s.dispose();
+  });
+
   test('manual refreshSource drives urlExpired tasks', () async {
     final e = FakeEngine();
     var attempt = 0;

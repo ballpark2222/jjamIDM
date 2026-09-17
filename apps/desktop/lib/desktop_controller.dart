@@ -46,6 +46,20 @@ final class DesktopController extends ChangeNotifier {
   final _componentStates = <String, ComponentState>{};
   String? lastError;
 
+  /// Dismiss the error banner. notifyListeners is protected —
+  /// widgets must go through this instead of poking the notifier.
+  void clearError() {
+    lastError = null;
+    notifyListeners();
+  }
+
+  /// Surface a failure in the banner (addDownload throws past
+  /// _guard — the caller reports it here).
+  void reportError(Object e) {
+    lastError = '$e';
+    notifyListeners();
+  }
+
   /// Sorted for display: active first, then by creation time.
   List<DownloadTask> get tasks {
     final list = _tasks.values.toList()
@@ -91,9 +105,11 @@ final class DesktopController extends ChangeNotifier {
         uri == null ? null : _classifier.classify(uri);
     final me = _mediaEngine;
     if (cls != null &&
-        cls.needsResolver &&
         me != null &&
-        me.supportsMedia) {
+        me.supportsMedia &&
+        // Manifests (m3u8/mpd) resolve to playlist text under the
+        // engine — the media pipeline must expand them to streams.
+        (cls.needsResolver || _classifier.isManifest(uri!))) {
       // Media page → engine-host resolves + downloads + muxes.
       final id = await me.enqueueMedia(
           pageUrl: url, targetDirectory: downloadDir);

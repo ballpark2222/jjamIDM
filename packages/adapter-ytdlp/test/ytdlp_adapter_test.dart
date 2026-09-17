@@ -43,7 +43,7 @@ void main() {
     final p = await resolver.probe('http://fixture/v');
     expect(p.supported, isTrue);
     expect(p.title, 'Fixture Video');
-    expect(p.formats.length, 3);
+    expect(p.formats.length, 4);
     final p360 = p.formats.firstWhere((f) => f.formatId == 'p360');
     expect(p360.hasAudio, isTrue);
     expect(p360.hasVideo, isTrue);
@@ -59,6 +59,30 @@ void main() {
     expect(plan.steps.single, isA<EngineDownloadStep>());
     expect(plan.finalFileName, isNot(contains('/')));
     expect(plan.finalFileName, isNot(contains(':')));
+  });
+
+
+
+  test('plan: engine step fetches the resolved format url, '
+      'not the page url', () async {
+    final plan = await resolver.plan(const MediaSelection(
+      pageUrl: 'http://fixture/v',
+      videoFormatId: 'p360',
+    ));
+    final step = plan.steps.single as EngineDownloadStep;
+    // The page url is an HTML watch page — downloading it as .mp4
+    // was the bug. The engine must get the format's stream url.
+    expect(step.url, 'https://cdn.fixture/vid360.mp4?sig=x');
+    expect(step.url, isNot('http://fixture/v'));
+  });
+
+  test('plan: http format without a resolved url falls back to '
+      'component step', () async {
+    final plan = await resolver.plan(const MediaSelection(
+      pageUrl: 'http://fixture/v',
+      videoFormatId: 'p144', // http+audio but url is absent
+    ));
+    expect(plan.steps.single, isA<ComponentDownloadStep>());
   });
 
   test('plan: split/adaptive → component step (yt-dlp fetches)',

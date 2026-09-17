@@ -23,11 +23,14 @@ final class TaskStateMachine {
     DownloadStatus.created: {
       DownloadStatus.resolving,
       DownloadStatus.resolvingMedia,
+      DownloadStatus.paused, // user-held before it ever ran
+      DownloadStatus.failed, // setup failure before any transition
       DownloadStatus.cancelled,
     },
     DownloadStatus.resolving: {
       DownloadStatus.ready,
       DownloadStatus.authRequired,
+      DownloadStatus.paused, // user pause beats the probe result
       DownloadStatus.failed,
       DownloadStatus.cancelled,
     },
@@ -39,6 +42,8 @@ final class TaskStateMachine {
     DownloadStatus.ready: {
       DownloadStatus.downloading,
       DownloadStatus.downloadingVideo,
+      DownloadStatus.pausing, // media park at a step boundary
+      DownloadStatus.paused, // queued task held by the user
       DownloadStatus.cancelled,
     },
     DownloadStatus.downloading: {
@@ -62,6 +67,7 @@ final class TaskStateMachine {
     },
     DownloadStatus.downloadingAudio: {
       DownloadStatus.pausing,
+      DownloadStatus.downloadingVideo, // next plan step is video-side
       DownloadStatus.muxing,
       DownloadStatus.verifying,
       DownloadStatus.retryWait,
@@ -98,6 +104,7 @@ final class TaskStateMachine {
       DownloadStatus.downloading, // replaceSource() succeeded
       DownloadStatus.downloadingVideo,
       DownloadStatus.downloadingAudio,
+      DownloadStatus.paused, // user hold while parked mid-refresh
       DownloadStatus.failed,
       DownloadStatus.cancelled,
     },
@@ -105,6 +112,7 @@ final class TaskStateMachine {
       DownloadStatus.postProcessing,
       DownloadStatus.completed,
       DownloadStatus.failed,
+      DownloadStatus.cancelled, // cancel lands inside the checksum await
     },
     DownloadStatus.muxing: {
       DownloadStatus.subtitleProcessing,
@@ -121,6 +129,7 @@ final class TaskStateMachine {
     DownloadStatus.postProcessing: {
       DownloadStatus.completed,
       DownloadStatus.failed,
+      DownloadStatus.cancelled,
     },
     // terminal
     DownloadStatus.completed: const {},

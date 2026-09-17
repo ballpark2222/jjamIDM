@@ -357,7 +357,10 @@ impl Drop for EngineClient {
             .and_then(|_| self.stdin.flush())
             .is_ok()
         {
-            for _ in 0..40 {
+            // The server drains scheduler + media persistence on
+            // shutdown — worst case 2×5s. Killing earlier would
+            // truncate the flush this handshake exists to protect.
+            for _ in 0..240 {
                 match self._child.try_wait() {
                     Ok(Some(_)) => return,
                     _ => thread::sleep(std::time::Duration::from_millis(50)),
@@ -422,6 +425,26 @@ fn ensure_engine(
     }
     *engine = Some(e);
     Ok(())
+}
+
+/// A download command that failed after `task.create` may have left
+/// a persisted parked task on the queue — respawn the engine (the
+/// transport failure already dropped it) and cancel the id so the
+/// extension's browser fallback doesn't produce a duplicate download
+/// later. Best-effort: a task that was never created just errors.
+fn compensate_created(
+    engine: &mut Option<EngineClient>,
+    cfg: &Config,
+    subs: &mut BTreeSet<String>,
+    task_id: &str,
+) {
+    subs.remove(task_id);
+    if ensure_engine(engine, cfg, subs).is_err() {
+        return;
+    }
+    let mut p = Map::new();
+    p.insert("taskId".into(), json!(task_id));
+    let _ = engine_call(engine, "task.cancel", p);
 }
 
 /// Terminal events end the server-side subscription — the id can
@@ -558,6 +581,11 @@ fn handle(
             if let Some(ua) = p.get("userAgent").and_then(|v| v.as_str()) {
                 dto.insert("userAgent".into(), json!(ua));
             }
+            // Capture page → originalPageUrl — URL-refresh resolvers
+            // re-fetch it when a signed link expires mid-download.
+            if let Some(pu) = p.get("pageUrl").and_then(|v| v.as_str()) {
+                dto.insert("pageUrl".into(), json!(pu));
+            }
             if !headers.is_empty() {
                 dto.insert("headers".into(), Value::Object(headers));
             }
@@ -570,12 +598,24 @@ fn handle(
             if let Some(pr) = p.get("priority").and_then(|v| v.as_i64()) {
                 params.insert("priority".into(), json!(pr));
             }
-            engine_call(engine, "task.create", params)?;
+            // Any failure after task.create leaves a persisted
+            // parked task behind — the extension then falls back to
+            // a browser download and the orphaned queue entry can be
+            // started later, producing a duplicate download. Compensate
+            // with a best-effort task.cancel on a fresh engine.
+            let created = engine_call(engine, "task.create", params);
+            if let Err(err) = created {
+                compensate_created(engine, cfg, subs, &task_id);
+                return Err(err);
+            }
             // Subscribe BEFORE start — a small file can finish in
             // the gap and its terminal event would be lost.
             let mut sub = Map::new();
             sub.insert("taskId".into(), json!(task_id));
-            engine_call(engine, "task.subscribeEvents", sub)?;
+            if let Err(err) = engine_call(engine, "task.subscribeEvents", sub) {
+                compensate_created(engine, cfg, subs, &task_id);
+                return Err(err);
+            }
             // Track it — an engine respawn loses this subscription
             // and ensure_engine replays it.
             subs.insert(task_id.clone());
@@ -585,7 +625,10 @@ fn handle(
             if start {
                 let mut sp = Map::new();
                 sp.insert("taskId".into(), json!(task_id));
-                engine_call(engine, "task.start", sp)?;
+                if let Err(err) = engine_call(engine, "task.start", sp) {
+                    compensate_created(engine, cfg, subs, &task_id);
+                    return Err(err);
+                }
             }
             Ok(json!({"taskId": task_id}))
         }

@@ -26,6 +26,12 @@ import 'package:freedm_persistence/freedm_persistence.dart';
 /// DIR) — used by the browser native host which has no control
 /// plane of its own. The desktop app runs its own scheduler and
 /// spawns this host without --queue.
+
+/// Held for the process lifetime so a second engine on the same
+/// --queue dir fails instead of double-owning the task repo and
+/// segment temp dirs. Null in passthrough (non-queue) mode.
+RandomAccessFile? _queueLock;
+
 Future<void> main(List<String> args) async {
   final sep = Platform.pathSeparator;
   var tempRoot =
@@ -49,7 +55,10 @@ Future<void> main(List<String> args) async {
       case '--queue':
         queueDir = args[i + 1];
       case '--max-concurrent':
-        maxConcurrent = int.tryParse(args[i + 1]) ?? 3;
+        // Clamp: 0/negative would stall the queue forever (_pump's
+        // slots check never passes), a huge value voids backpressure.
+        maxConcurrent =
+            (int.tryParse(args[i + 1]) ?? 3).clamp(1, 64);
     }
   }
 
@@ -93,14 +102,12 @@ Future<void> main(List<String> args) async {
       if (File(cand).existsSync()) return cand;
     }
     var d = Directory.current.absolute;
+    // Walk ancestors probing <dir>/.tools — the workspace keeps the
+    // dev toolchain in <repo-parent>/.tools (e.g. AI_Class/.tools),
+    // so a run rooted at that dir itself must probe inside it too.
     for (var i = 0; i < 8; i++) {
-      for (final toolsDir in [
-        Directory('${d.parent.path}$sep.tools'),
-        Directory('${d.path}$sep..$sep.tools'),
-      ]) {
-        final hit = findUnderTools(toolsDir, name);
-        if (hit != null) return hit;
-      }
+      final hit = findUnderTools(Directory('${d.path}$sep.tools'), name);
+      if (hit != null) return hit;
       d = d.parent;
     }
     return null;
@@ -146,6 +153,29 @@ Future<void> main(List<String> args) async {
 
   DownloadScheduler? scheduler;
   if (queueDir != null) {
+    // Two browsers (Chrome + Edge) each spawn their own native host,
+    // each cold-launching an engine on the SAME queueDir + tempRoot.
+    // Two process-local JsonTaskRepository writers on one tasks.json
+    // lose writes (read-modify-write), and both recoveries would
+    // re-dispatch the same tasks onto shared segment temp files —
+    // a double-writer corruption window. Hold an exclusive lock for
+    // the process lifetime; a second engine exits with a clear
+    // error instead of racing the queue owner.
+    final lockFile = File('${queueDir}${sep}engine.lock');
+    await lockFile.parent.create(recursive: true);
+    final lockHandle = await lockFile.open(mode: FileMode.write);
+    try {
+      // lock() blocks until the holder exits — bound it: a stalled
+      // acquire would hang the host before it ever answers hello.
+      await lockHandle
+          .lock(FileLock.exclusive)
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {
+      stderr.writeln('engine-host: queue $queueDir already locked by '
+          'another engine-host instance — exiting');
+      exit(3);
+    }
+    _queueLock = lockHandle; // keep the handle alive for process life
     final repo =
         await JsonTaskRepository.open(Directory(queueDir));
     var seq = 0;
@@ -179,6 +209,11 @@ Future<void> main(List<String> args) async {
   try {
     await scheduler?.flush().timeout(const Duration(seconds: 5));
     await media?.flush().timeout(const Duration(seconds: 5));
+  } catch (_) {}
+  // Release the queue lock before exit (the OS would anyway — this
+  // also silences the write-only-field lint and is honest hygiene).
+  try {
+    await _queueLock?.close();
   } catch (_) {}
   // Without an explicit exit the event loop stays alive on open
   // engine sockets/isolates — an orphaned host keeps writing shared

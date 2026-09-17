@@ -190,7 +190,27 @@ class _HomePageState extends State<HomePage> {
             tooltip: 'Refresh components',
             onPressed: c.refreshComponents),
       ]),
-      body: _tab == 0 ? _downloadList(c) : _componentList(c),
+      body: Column(children: [
+        // _guard records failures into lastError — surface them or
+        // every engine/RPC failure is a silent no-op to the user.
+        AnimatedBuilder(
+          animation: c,
+          builder: (_, _) => c.lastError == null
+              ? const SizedBox.shrink()
+              : MaterialBanner(
+                  content: Text(c.lastError!,
+                      maxLines: 2, overflow: TextOverflow.ellipsis),
+                  backgroundColor:
+                      Theme.of(context).colorScheme.errorContainer,
+                  actions: [
+                    TextButton(
+                        onPressed: c.clearError,
+                        child: const Text('닫기')),
+                  ]),
+        ),
+        Expanded(
+            child: _tab == 0 ? _downloadList(c) : _componentList(c)),
+      ]),
       floatingActionButton: _tab == 0
           ? FloatingActionButton.extended(
               onPressed: () => _addDialog(context, c),
@@ -288,7 +308,14 @@ class _HomePageState extends State<HomePage> {
       ),
     );
     if (ok == true && url.text.trim().isNotEmpty) {
-      await c.addDownload(url.text.trim());
+      try {
+        await c.addDownload(url.text.trim());
+      } catch (e) {
+        // addDownload bypasses _guard (it returns the task) —
+        // surface failures through the same banner instead of an
+        // unhandled async error.
+        c.reportError(e);
+      }
     }
   }
 }

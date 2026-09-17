@@ -13,6 +13,7 @@ final class DownloadRequestDto {
     this.userAgent,
     this.maxConnections,
     this.speedLimitBytesPerSecond,
+    this.pageUrl,
   });
 
   final String url;
@@ -23,6 +24,11 @@ final class DownloadRequestDto {
   final String? userAgent;
   final int? maxConnections;
   final int? speedLimitBytesPerSecond;
+
+  /// The page the download was captured on — persisted as
+  /// DownloadSource.originalPageUrl so a URL-refresh resolver can
+  /// re-derive an expired signed URL. Additive (v1-compatible).
+  final String? pageUrl;
 
   factory DownloadRequestDto.fromJson(Map<String, Object?> json) =>
       DownloadRequestDto(
@@ -36,6 +42,7 @@ final class DownloadRequestDto {
         maxConnections: json['maxConnections'] as int?,
         speedLimitBytesPerSecond:
             json['speedLimitBytesPerSecond'] as int?,
+        pageUrl: json['pageUrl'] as String?,
       );
 
   Map<String, Object?> toJson() => {
@@ -47,6 +54,7 @@ final class DownloadRequestDto {
         'userAgent': userAgent,
         'maxConnections': maxConnections,
         'speedLimitBytesPerSecond': speedLimitBytesPerSecond,
+        'pageUrl': pageUrl,
       };
 }
 

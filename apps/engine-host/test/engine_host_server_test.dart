@@ -18,6 +18,7 @@ import 'package:test/test.dart';
 
 final class _FakeEngine implements DownloadEngine {
   final controllers = <String, StreamController<EngineEvent>>{};
+  final requests = <String, DownloadRequest>{};
 
   @override
   String get providerId => 'engine.fake';
@@ -45,6 +46,7 @@ final class _FakeEngine implements DownloadEngine {
       TaskId id, DownloadRequest r) async {
     controllers[id.value] =
         StreamController<EngineEvent>.broadcast();
+    requests[id.value] = r;
     return EngineTaskHandle(engineTaskId: id.value);
   }
 
@@ -85,6 +87,22 @@ final class _FakeResolver implements MediaResolver {
       const MediaPlan(steps: [], finalFileName: 'out');
   @override
   Future<String> version() async => 'fake';
+}
+
+/// Probe that parks on [release] — stands in for a slow yt-dlp
+/// invocation so a test can prove unrelated requests aren't queued
+/// behind it.
+final class _GatedResolver extends _FakeResolver {
+  final entered = Completer<void>();
+  final release = Completer<void>();
+  @override
+  Future<MediaProbe> probe(String url,
+      {Map<String, String> headers = const {},
+      String? cookieRef}) async {
+    if (!entered.isCompleted) entered.complete();
+    await release.future;
+    return const MediaProbe(supported: true, title: 't');
+  }
 }
 
 final class _FakeMuxer implements MediaMuxer {
@@ -144,14 +162,16 @@ void main() {
     }
   });
 
-  Future<({EngineHostServer server, _Rig rig, Future<void> done})>
+  Future<({EngineHostServer server, _Rig rig, Future<void> done,
+          _FakeEngine engine})>
       wire({DownloadScheduler? scheduler,
           MediaDownloadCoordinator? media}) async {
     final outFile = File('${tmp.path}${Platform.pathSeparator}'
         'out-${DateTime.now().microsecondsSinceEpoch}.ndjson');
     final out = outFile.openWrite();
+    final engine = _FakeEngine();
     final server = EngineHostServer(
-        engine: _FakeEngine(),
+        engine: engine,
         tempRoot: tmp,
         media: media,
         scheduler: scheduler,
@@ -159,7 +179,7 @@ void main() {
     final lines = StreamController<String>();
     final rig = _Rig._(lines, out, outFile);
     final done = server.run(lines.stream);
-    return (server: server, rig: rig, done: done);
+    return (server: server, rig: rig, done: done, engine: engine);
   }
 
   Future<void> closeRig(_Rig rig, Future<void> done) async {
@@ -278,6 +298,80 @@ void main() {
         .map((e) => (e as Map)['id'])
         .toList();
     expect(t, contains('m-restored'));
+    await closeRig(w.rig, w.done);
+    await media.dispose();
+  });
+
+  test('task.create maps dto.pageUrl → source.originalPageUrl — '
+      'URL-refresh resolvers re-fetch it after expiry', () async {
+    final w = await wire();
+    w.rig.send(EngineProtocol.taskCreate, {
+      'taskId': 't1',
+      'request': const DownloadRequestDto(
+        url: 'http://x/f.bin',
+        targetDirectory: 'C:\\dl',
+        pageUrl: 'http://x/watch?v=1',
+      ).toJson(),
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(w.engine.requests['t1']!.source.originalPageUrl,
+        'http://x/watch?v=1');
+    await closeRig(w.rig, w.done);
+  });
+
+  test('a slow media.probe does not block unrelated requests',
+      () async {
+    final repo = await JsonTaskRepository.open(
+        Directory('${tmp.path}${Platform.pathSeparator}media'));
+    final resolver = _GatedResolver();
+    final media = MediaDownloadCoordinator(
+        engine: _FakeEngine(),
+        repository: repo,
+        eventBus: InMemoryEventBus(),
+        resolver: resolver,
+        muxer: _FakeMuxer(),
+        componentDownloaders: const {});
+    final w = await wire(media: media);
+
+    w.rig.send(EngineProtocol.mediaProbe, {'pageUrl': 'https://x/v'}, 1);
+    await resolver.entered.future
+        .timeout(const Duration(seconds: 5));
+    // Probe is parked — a capabilities call must still answer.
+    w.rig.send(EngineProtocol.capabilities, {}, 2);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    var frames = await w.rig.frames();
+    expect(frames.any((f) => f['id'] == 2 && f['error'] == null),
+        isTrue,
+        reason: 'capabilities must answer while probe is in flight');
+    expect(frames.any((f) => f['id'] == 1), isFalse);
+
+    resolver.release.complete();
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    frames = await w.rig.frames();
+    expect(frames.any((f) => f['id'] == 1 && f['error'] == null),
+        isTrue);
+    await closeRig(w.rig, w.done);
+    await media.dispose();
+  });
+
+  test('media.enqueue without targetDirectory → badRequest, '
+      'not an internal error', () async {
+    final repo = await JsonTaskRepository.open(
+        Directory('${tmp.path}${Platform.pathSeparator}media'));
+    final media = MediaDownloadCoordinator(
+        engine: _FakeEngine(),
+        repository: repo,
+        eventBus: InMemoryEventBus(),
+        resolver: _FakeResolver(),
+        muxer: _FakeMuxer(),
+        componentDownloaders: const {});
+    final w = await wire(media: media);
+    w.rig.send(EngineProtocol.mediaEnqueue,
+        {'pageUrl': 'https://x/v'});
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    final frames = await w.rig.frames();
+    final res = frames.singleWhere((f) => f['id'] == 1);
+    expect((res['error'] as Map)['code'], RpcError.badRequest);
     await closeRig(w.rig, w.done);
     await media.dispose();
   });

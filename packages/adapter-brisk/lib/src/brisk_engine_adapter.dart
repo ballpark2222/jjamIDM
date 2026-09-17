@@ -53,6 +53,14 @@ final class _BriskTask {
   /// still running from an older pause must stop re-sending, or it
   /// would re-pause a download the user just resumed.
   var pauseEpoch = 0;
+
+  /// Pre-first-byte stall watchdog. Upstream never emits `failed`
+  /// for a dead server: `_onError` leaves the connection status at
+  /// `connecting`, and once the reset budget is spent nothing marks
+  /// the download terminal — it would sit in the UI forever. Armed
+  /// on start, disarmed on the first received byte (upstream's reset
+  /// machinery owns mid-download stalls) or on pause/terminal.
+  Timer? stallWatchdog;
 }
 
 /// DownloadEngine implementation over the vendored Brisk engine.
@@ -326,6 +334,9 @@ final class BriskEngineAdapter implements DownloadEngine {
       // re-send cancel briefly so the just-started engine task
       // actually stops instead of running as an untracked zombie.
       for (var i = 0; i < 20; i++) {
+        if (_tasks.containsKey(id.value)) {
+          break; // re-created under the same uid — not our kill target
+        }
         try {
           brisk.DownloadEngine.cancel(id.value);
         } catch (_) {
@@ -337,11 +348,43 @@ final class BriskEngineAdapter implements DownloadEngine {
     }
     t.started = true;
     t.pauseAcked = false;
+    _armStallWatchdog(id, t);
     if (t.wantPause) {
       t.wantPause = false;
       t.expectPaused = true;
       await _pauseUntilAcked(id, ++t.pauseEpoch);
     }
+  }
+
+  /// Arms the pre-first-byte watchdog — bound is the connection
+  /// retry budget plus slack, clamped so a misconfigured engine
+  /// can't hang or insta-fail a task.
+  void _armStallWatchdog(TaskId id, _BriskTask t) {
+    t.stallWatchdog?.cancel();
+    final ms =
+        (_retryTimeout * (_maxRetries + 2)).clamp(5000, 120000).toInt();
+    t.stallWatchdog = Timer(Duration(milliseconds: ms),
+        () => _onStallTimeout(id));
+  }
+
+  /// No bytes within the retry budget ⇒ the server is dead —
+  /// upstream stalls in `connecting` forever, so fail the task here
+  /// (engineUnavailable keeps it retryable through the scheduler).
+  void _onStallTimeout(TaskId id) {
+    final t = _tasks[id.value];
+    if (t == null || !t.started) return;
+    // Paused tasks are exempt — resume() re-arms the watchdog.
+    if ((t.lastProgress?.receivedBytes ?? 0) > 0 || t.expectPaused) {
+      return;
+    }
+    t.events.add(const EngineFailed(ErrorCode.engineUnavailable,
+        detail: 'no response from server within the retry budget'));
+    unawaited(t.events.close());
+    _tasks.remove(id.value);
+    try {
+      brisk.DownloadEngine.cancel(id.value);
+    } catch (_) {}
+    _reapUpstream(id.value);
   }
 
   /// Sends pause until the engine acknowledges it with a paused
@@ -411,6 +454,11 @@ final class BriskEngineAdapter implements DownloadEngine {
       t.wantPause = false;
       return;
     }
+    // A stalled-out pause can outlive the watchdog — a resumed
+    // download to a still-dead server must get a fresh budget.
+    if ((t.lastProgress?.receivedBytes ?? 0) == 0) {
+      _armStallWatchdog(id, t);
+    }
     brisk.DownloadEngine.resume(id.value);
   }
 
@@ -434,6 +482,7 @@ final class BriskEngineAdapter implements DownloadEngine {
       } catch (_) {}
       t.events.add(const EngineFailed(ErrorCode.cancelledByUser));
       unawaited(t.events.close());
+      t.stallWatchdog?.cancel();
       _tasks.remove(id.value);
       return;
     }
@@ -493,6 +542,20 @@ final class BriskEngineAdapter implements DownloadEngine {
 
   EngineProgress? lastProgress(TaskId id) => _tasks[id.value]?.lastProgress;
 
+  /// Upstream never cleans its per-task statics: the engine isolate
+  /// (with its periodic timers), stream channel and item entry leak
+  /// for every download in a long-lived engine-host. Reap them on
+  /// every terminal status — a retry runs create()+start() again
+  /// which spawns a fresh isolate, and partial-file resume lives in
+  /// the temp segment files, not the retained isolate.
+  static void _reapUpstream(String uid) {
+    try {
+      brisk.DownloadEngine.engineIsolates.remove(uid)?.kill();
+      brisk.DownloadEngine.engineChannels.remove(uid);
+      brisk.DownloadEngine.downloadItems.remove(uid);
+    } catch (_) {}
+  }
+
   /// Whether the engine currently tracks [id] — events() returns an
   /// empty stream before create() runs, so queue-mode subscribers
   /// poll this before attaching.
@@ -543,7 +606,9 @@ final class BriskEngineAdapter implements DownloadEngine {
         ))
         ..add(EngineCompleted(outputPath: outPath));
       unawaited(t.events.close());
+      t.stallWatchdog?.cancel();
       _tasks.remove(uid);
+      _reapUpstream(uid);
       return;
     }
     if ((msg.paused || status == brisk.DownloadStatus.paused) &&
@@ -562,7 +627,12 @@ final class BriskEngineAdapter implements DownloadEngine {
       t.events.add(EngineFailed(ErrorCode.unknown,
           detail: msg.message.isEmpty ? status : msg.message));
       unawaited(t.events.close());
+      t.stallWatchdog?.cancel();
       _tasks.remove(uid);
+      // Safe to reap here too: a retry re-runs create()+start() with
+      // a fresh item, and partial-file resume lives in the temp
+      // segment files, not the retained isolate.
+      _reapUpstream(uid);
       return;
     }
     if (status == brisk.DownloadStatus.canceled) {
@@ -576,7 +646,9 @@ final class BriskEngineAdapter implements DownloadEngine {
       } catch (_) {}
       t.events.add(const EngineFailed(ErrorCode.cancelledByUser));
       unawaited(t.events.close());
+      t.stallWatchdog?.cancel();
       _tasks.remove(uid);
+      _reapUpstream(uid);
       return;
     }
     // The engine's aggregate message leaves totalReceivedBytes at 0;
@@ -595,6 +667,12 @@ final class BriskEngineAdapter implements DownloadEngine {
     // per-connection straggler and the pause hasn't actually landed;
     // clearing it lets the retry loop keep sending.
     if (t.expectPaused) t.pauseAcked = false;
+    // First byte ⇒ the server is alive; upstream's reset machinery
+    // owns stall recovery from here, so the watchdog stands down.
+    if (ev.receivedBytes > 0) {
+      t.stallWatchdog?.cancel();
+      t.stallWatchdog = null;
+    }
     t.lastProgress = ev;
     t.events.add(ev);
   }

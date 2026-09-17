@@ -27,16 +27,26 @@ Future<void> main(List<String> args) async {
           'format_id': 'p360', 'ext': 'mp4', 'height': 360,
           'vcodec': 'avc1', 'acodec': 'mp4a', 'protocol': 'https',
           'tbr': 500, 'filesize': 1048576,
+          'url': 'https://cdn.fixture/vid360.mp4?sig=x',
         },
         {
           'format_id': 'v720', 'ext': 'mp4', 'height': 720,
           'vcodec': 'avc1', 'acodec': 'none', 'protocol': 'm3u8_native',
           'tbr': 2500,
+          'url': 'https://cdn.fixture/v720.m3u8',
         },
         {
           'format_id': 'a128', 'ext': 'm4a',
           'vcodec': 'none', 'acodec': 'aac', 'protocol': 'https',
           'tbr': 128,
+          'url': 'https://cdn.fixture/a128.m4a?sig=y',
+        },
+        {
+          // http+audio but no resolved url — yt-dlp emits this for
+          // storyboard/redirect formats; must not engine-download.
+          'format_id': 'p144', 'ext': 'mp4', 'height': 144,
+          'vcodec': 'avc1', 'acodec': 'mp4a', 'protocol': 'https',
+          'tbr': 90,
         },
       ],
       'subtitles': {

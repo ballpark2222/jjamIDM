@@ -472,6 +472,68 @@ void main() {
     await s2.dispose();
   });
 
+  test('pause during retryWait disarms the backoff timer', () async {
+    final e = FakeEngine();
+    final s = sched(e);
+    final t = await s.enqueue(req(),
+        retryPolicy: const RetryPolicy(
+            maxAttempts: 3, initialDelay: Duration(milliseconds: 60)));
+    await until(s, t.id, (x) => x.status == DownloadStatus.downloading);
+    e.emit(t.id, const EngineFailed(ErrorCode.connectionDropped));
+    await until(s, t.id, (x) => x.status == DownloadStatus.retryWait);
+
+    await s.pause(t.id);
+    await until(s, t.id, (x) => x.status == DownloadStatus.paused);
+    // Well past the 60ms backoff — the timer must not fire under
+    // the pause and re-dispatch the task.
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    expect(s.task(t.id)!.status, DownloadStatus.paused);
+    expect(e.started.where((id) => id == t.id.value).length, 1);
+    await s.dispose();
+  });
+
+  test('pause on a queued ready task blocks dispatch', () async {
+    final e = FakeEngine();
+    final s = sched(e, maxConcurrent: 1);
+    final a = await s.enqueue(req('http://x/a'));
+    final b = await s.enqueue(req('http://x/b'));
+    await until(s, a.id, (x) => x.status == DownloadStatus.downloading);
+    await until(s, b.id, (x) => x.status == DownloadStatus.ready);
+
+    await s.pause(b.id);
+    expect(s.task(b.id)!.status, DownloadStatus.paused);
+
+    // Free the slot — the paused task must not be dispatched.
+    e.emit(a.id, const EngineCompleted(outputPath: null));
+    await until(s, a.id, (x) => x.status == DownloadStatus.completed);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(e.started, isNot(contains(b.id.value)));
+    expect(s.task(b.id)!.status, DownloadStatus.paused);
+
+    // Resume admits it through the normal path.
+    await s.resume(b.id);
+    await until(s, b.id, (x) => x.status == DownloadStatus.downloading);
+    expect(e.started, contains(b.id.value));
+    await s.dispose();
+  });
+
+  test('pause acknowledgement frees the slot for queued work',
+      () async {
+    final e = FakeEngine();
+    final s = sched(e, maxConcurrent: 1);
+    final a = await s.enqueue(req('http://x/a'));
+    final b = await s.enqueue(req('http://x/b'));
+    await until(s, a.id, (x) => x.status == DownloadStatus.downloading);
+    await until(s, b.id, (x) => x.status == DownloadStatus.ready);
+
+    // Pause lands → EnginePaused → paused frees the slot → b pumps
+    // without waiting for another unrelated event.
+    await s.pause(a.id);
+    await until(s, b.id, (x) => x.status == DownloadStatus.downloading);
+    expect(e.started, contains(b.id.value));
+    await s.dispose();
+  });
+
   test('flush drains a debounce write that already fired', () async {
     final gated = GatedRepo(repo);
     final e = FakeEngine();

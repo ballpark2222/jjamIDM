@@ -24,6 +24,10 @@ components:
     patches:
       - third_party/brisk-engine/patches/0001-remove-dead-path-provider-dep.patch
       - third_party/brisk-engine/patches/0002-custom-headers-and-cancel.patch
+      - third_party/brisk-engine/patches/0003-requestFileInfo-null-on-missing-length.patch
+      - third_party/brisk-engine/patches/0004-logger-stdout-to-stderr.patch
+      - third_party/brisk-engine/patches/0005-start-returns-future.patch
+      - third_party/brisk-engine/patches/0006-redact-request-header-log.patch
 
   media.ytdlp:
     display_name: "yt-dlp"

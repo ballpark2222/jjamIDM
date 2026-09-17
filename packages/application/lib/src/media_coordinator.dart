@@ -120,7 +120,11 @@ final class MediaDownloadCoordinator {
       providerId: _resolver.providerId,
     );
     _tasks[task.id.value] = task;
-    _runs[task.id.value] = _MediaRun(selection, workDir);
+    // Per-task subdir — a shared flat workDir collides when two
+    // tasks produce the same outputFileName (.part files would
+    // cross-pollinate resume state and corrupt both downloads).
+    _runs[task.id.value] = _MediaRun(
+        selection, '$workDir${Platform.pathSeparator}${task.id.value}');
     await _repo.upsert(task);
     _bus.publish(DownloadCreated(task.id, now));
     unawaited(_run(task));
@@ -150,7 +154,7 @@ final class MediaDownloadCoordinator {
   /// into memory), so the repo delete must run even when the task
   /// isn't in [_tasks] — otherwise it resurfaces on every restart.
   /// workDir artifacts under temp-root are left for the temp
-  /// cleaner (the dir is shared across tasks).
+  /// cleaner (per-task subdirs keep it bounded).
   Future<void> remove(TaskId id) async {
     final t = _tasks[id.value];
     if (t != null && !t.status.isTerminal) await cancel(id);
@@ -222,8 +226,10 @@ final class MediaDownloadCoordinator {
 
   Future<void> _run(DownloadTask task) async {
     final run = _runs[task.id.value]!;
-    await Directory(run.workDir).create(recursive: true);
     try {
+      // Inside try — an unwritable workDir must fail the task, not
+      // strand it in `created` with an unhandled async error.
+      await Directory(run.workDir).create(recursive: true);
       task = _apply(task, DownloadStatus.resolvingMedia);
       run.plan = await _resolver.plan(run.sel, headers: run.sel.headers);
       // ready is the gate state between resolution and downloads.
@@ -298,8 +304,6 @@ final class MediaDownloadCoordinator {
       // Deliver the final artifact to the user's target directory.
       String? delivered;
       if (run.produced.isNotEmpty) {
-        await Directory(task.output.targetDirectory)
-            .create(recursive: true);
         final src = run.produced.last;
         var name = plan.finalFileName;
         if (!name.contains('.')) {
@@ -308,15 +312,7 @@ final class MediaDownloadCoordinator {
             name += src.substring(dot); // keep container ext
           }
         }
-        final dest =
-            '${task.output.targetDirectory}${Platform.pathSeparator}$name';
-        delivered = await File(src).rename(dest).then((f) => f.path)
-            .catchError((_) async {
-          // cross-device fallback
-          await File(src).copy(dest);
-          await File(src).delete();
-          return dest;
-        });
+        delivered = await _deliver(src, task.output.targetDirectory, name);
       }
 
       task = _to(task, DownloadStatus.verifying);
@@ -343,6 +339,39 @@ final class MediaDownloadCoordinator {
         _fail(cur, ErrorCode.unknown, '$e');
       }
     }
+  }
+
+  /// Move [src] into [dir]/[name], picking `name (N).ext` when the
+  /// plain name is taken — a copy fallback must never silently
+  /// overwrite an existing user file.
+  Future<String> _deliver(String src, String dir, String name) async {
+    await Directory(dir).create(recursive: true);
+    final dot = name.lastIndexOf('.');
+    final stem = dot > 0 ? name.substring(0, dot) : name;
+    final ext = dot > 0 ? name.substring(dot) : '';
+    for (var i = 0; i < 10000; i++) {
+      final dest = i == 0
+          ? '$dir${Platform.pathSeparator}$name'
+          : '$dir${Platform.pathSeparator}$stem ($i)$ext';
+      if (File(dest).existsSync()) continue;
+      try {
+        return (await File(src).rename(dest)).path;
+      } on FileSystemException {
+        // Cross-device (or a locked name): copy only onto a path we
+        // believe is free; if one appeared mid-check, take the next
+        // index instead of overwriting it.
+        if (File(dest).existsSync()) continue;
+        try {
+          await File(src).copy(dest);
+          await File(src).delete();
+          return dest;
+        } on FileSystemException {
+          if (File(dest).existsSync()) continue;
+          rethrow;
+        }
+      }
+    }
+    throw StateError('no free file name for $name in $dir');
   }
 
   /// pausing → paused with the run record retained for resume().
@@ -404,6 +433,17 @@ final class MediaDownloadCoordinator {
         await _engine.start(task.id);
       }
       run.engineStarted = true;
+      // A cancel that landed during create/start marked the record
+      // terminal while the engine task kept running — stop it here
+      // or it downloads orphaned into workDir (same guard the
+      // scheduler applies after engine.start).
+      final cur = _tasks[task.id.value];
+      if (cur == null || cur.status.isTerminal) {
+        try {
+          await _engine.cancel(task.id);
+        } catch (_) {}
+        throw StateError('task terminated during engine start');
+      }
       // A pause that landed during create/start couldn't reach the
       // engine — apply it now so the request isn't dropped.
       if (run.pauseRequested) {

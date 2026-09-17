@@ -59,10 +59,28 @@ final class EngineHostServer {
         continue; // ignore garbage on the wire
       }
       if (msg is! RpcRequest) continue;
-      await _dispatch(msg);
+      // Dispatch concurrently: clients already order their own
+      // dependent calls by awaiting each response, so serializing
+      // here only lets a slow media.probe (yt-dlp, tens of seconds)
+      // stall an unrelated pause/status behind it.
+      // Errors are already mapped to wire responses inside
+      // _dispatch; catchError guards the last unhandled path (a
+      // _send throwing on a broken pipe) so wait()/unawaited stay
+      // error-free.
+      final d = _dispatch(msg).catchError((_) {});
+      _inFlight.add(d);
+      unawaited(d.whenComplete(() => _inFlight.remove(d)));
     }
+    // stdin EOF: in-flight dispatches may still hold a pending
+    // persistence write — drain them (bounded) so the caller's
+    // flush below actually lands their state.
+    try {
+      await Future.wait(_inFlight).timeout(const Duration(seconds: 5));
+    } catch (_) {}
     await _mediaSub?.cancel();
   }
+
+  final _inFlight = <Future<void>>{};
 
   Future<void> _dispatch(RpcRequest req) async {
     try {
@@ -74,6 +92,12 @@ final class EngineHostServer {
       _sendError(req, RpcError.unsupported, '$e');
     } on StateError catch (e) {
       _sendError(req, RpcError.taskNotFound, e.message);
+    } on FormatException catch (e) {
+      _sendError(req, RpcError.badRequest, '$e');
+    } on TypeError catch (e) {
+      // A missing/mistyped param throws TypeError at the `as` cast —
+      // that's a malformed request, not an internal engine fault.
+      _sendError(req, RpcError.badRequest, 'bad params: $e');
     } catch (e) {
       _sendError(req, RpcError.engineError, '$e');
     }
@@ -85,6 +109,7 @@ final class EngineHostServer {
     DownloadRequest toDomain(DownloadRequestDto d) => DownloadRequest(
           source: DownloadSource(
             initialUrl: d.url,
+            originalPageUrl: d.pageUrl,
             referer: d.referer,
             userAgent: d.userAgent,
           ),
@@ -255,6 +280,7 @@ final class EngineHostServer {
                 'hasAudio': f.hasAudio,
                 'filesizeBytes': f.filesizeBytes,
                 'height': f.height,
+                'url': f.url,
               },
           ],
         };
@@ -279,7 +305,11 @@ final class EngineHostServer {
           ),
           workDir: req.params['workDir'] as String? ??
               '${_tempRoot.path}${Platform.pathSeparator}media',
-          targetDirectory: req.params['targetDirectory'] as String,
+          targetDirectory:
+              req.params['targetDirectory'] is String
+                  ? req.params['targetDirectory'] as String
+                  : throw const FormatException(
+                      'targetDirectory required'),
         );
         return {'taskId': t.id.value};
 

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:freedm_adapter_ffmpeg/freedm_adapter_ffmpeg.dart';
@@ -50,6 +51,61 @@ void main() {
     final r = await muxer.attachSubtitles(v.path, [s.path]);
     expect(r.ok, isTrue, reason: '${r.error}');
     expect(File('${tmp.path}\\movie.subtitled.mp4').existsSync(), isTrue);
+  });
+
+  test('attachSubtitles keeps the input container and picks a '
+      'container-legal subtitle codec', () async {
+    final argvLog = File('${tmp.path}\\argv.log');
+    final m = FfmpegMuxer(
+        command: shim,
+        environment: {'FAKE_FFMPEG_ARGV_LOG': argvLog.path});
+    final v = File('${tmp.path}\\movie.mkv')..writeAsBytesSync([9]);
+    final s = File('${tmp.path}\\en.vtt')..writeAsBytesSync([8]);
+    final r = await m.attachSubtitles(v.path, [s.path]);
+    expect(r.ok, isTrue, reason: '${r.error}');
+    // mkv in → mkv out (mov_text would be rejected there).
+    expect(
+        File('${tmp.path}\\movie.subtitled.mkv').existsSync(),
+        isTrue);
+    final last = (await argvLog.readAsLines())
+        .map((l) => (jsonDecode(l) as List).cast<String>())
+        .last;
+    expect(last[last.indexOf('-c:s') + 1], 'srt');
+  });
+
+  test('mux resolves bare inputs/output against workDir', () async {
+    // The coordinator passes bare filenames + a workDir — they must
+    // resolve there, not against the engine-host process CWD.
+    final a = File('${tmp.path}\\v.mp4')..writeAsBytesSync([1, 2]);
+    final b = File('${tmp.path}\\a.m4a')..writeAsBytesSync([3]);
+    final r = await muxer.mux(
+      const MuxStep(
+        inputs: ['v.mp4', 'a.m4a'], // bare names
+        outputFileName: 'out.mp4',
+      ),
+      workDir: tmp.path,
+    );
+    expect(r.ok, isTrue, reason: '${r.error}');
+    final expected = '${tmp.path}\\out.mp4';
+    // outputPath must be the real location — the coordinator uses it
+    // as a filesystem path directly.
+    expect(r.outputPath, expected);
+    expect(File(expected).readAsBytesSync(), [1, 2, 3]);
+    expect(a.existsSync(), isTrue);
+    expect(b.existsSync(), isTrue);
+  });
+
+  test('mux leaves absolute paths untouched under a workDir',
+      () async {
+    final a = File('${tmp.path}\\abs.mp4')..writeAsBytesSync([7]);
+    final out = '${tmp.path}\\abs_out.mp4';
+    final r = await muxer.mux(
+      MuxStep(inputs: [a.path], outputFileName: out),
+      workDir: tmp.path,
+    );
+    expect(r.ok, isTrue, reason: '${r.error}');
+    expect(r.outputPath, out);
+    expect(File(out).readAsBytesSync(), [7]);
   });
 
   test('empty inputs fail cleanly (no process spawned hang)', () async {

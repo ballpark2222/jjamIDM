@@ -15,6 +15,7 @@ final class MediaFormat {
     this.hasAudio = false,
     this.protocol = 'http', // http | hls | dash | …
     this.label,
+    this.url,
   });
 
   final String formatId;
@@ -27,6 +28,11 @@ final class MediaFormat {
   final bool hasAudio;
   final String protocol;
   final String? label;
+
+  /// The resolved direct stream URL (usually a signed CDN link) —
+  /// the engine downloads this, never [MediaSelection.pageUrl],
+  /// which is the HTML watch page.
+  final String? url;
 
   String get shortLabel =>
       label ??

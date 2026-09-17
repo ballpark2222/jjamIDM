@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:brisk_engine/brisk_engine.dart' as brisk;
 import 'package:crypto/crypto.dart';
 import 'package:freedm_adapter_brisk/freedm_adapter_brisk.dart';
 import 'package:freedm_core_domain/freedm_core_domain.dart';
@@ -319,5 +320,63 @@ void main() {
             .existsSync(),
         isFalse,
         reason: 'cancelled task produced a completed output file');
+  });
+
+  test('upstream engine isolate and statics are reaped on completion',
+      () async {
+    // Upstream never cleans DownloadEngine.engineIsolates /
+    // engineChannels / downloadItems — a long-lived engine-host would
+    // leak one isolate + 4 timers per download. The adapter reaps
+    // them on terminal status.
+    final engine = newEngine();
+    const id = TaskId('dl-reap');
+    await engine.create(id, req('/file-range', conns: 4));
+    final done = Completer<EngineEvent>();
+    engine.events(id).listen((e) {
+      if (e is EngineCompleted || e is EngineFailed) done.complete(e);
+    });
+    await engine.start(id);
+    final e = await done.future.timeout(const Duration(minutes: 2));
+    expect(e, isA<EngineCompleted>(),
+        reason: (e is EngineFailed) ? '${e.detail}' : '');
+    expect(brisk.DownloadEngine.engineIsolates.containsKey(id.value),
+        isFalse);
+    expect(brisk.DownloadEngine.engineChannels.containsKey(id.value),
+        isFalse);
+    expect(brisk.DownloadEngine.downloadItems.containsKey(id.value),
+        isFalse);
+  });
+
+  test('dead server fails via stall watchdog and is reaped',
+      () async {
+    // Upstream never emits `failed` for a dead server (exhausted
+    // retries stall in `connecting` forever). The adapter's
+    // pre-first-byte watchdog bounds that to the retry budget —
+    // without it this test hangs instead of failing.
+    final engine = BriskEngineAdapter(
+        tempRoot: tempRoot,
+        connectionRetryTimeoutMillis: 300,
+        maxConnectionRetryCount: 1);
+    const id = TaskId('dl-stall-fail');
+    await engine.create(
+        id,
+        DownloadRequest(
+          source: const DownloadSource(
+              initialUrl: 'http://127.0.0.1:1/refused'),
+          output: OutputSpec(targetDirectory: outDir.path),
+          maxConnections: 4,
+        ));
+    final done = Completer<EngineEvent>();
+    engine.events(id).listen((e) {
+      if (e is EngineCompleted || e is EngineFailed) done.complete(e);
+    });
+    await engine.start(id);
+    final e = await done.future.timeout(const Duration(minutes: 1));
+    expect(e, isA<EngineFailed>(),
+        reason: 'dead server wedged in connecting — watchdog dead');
+    expect(brisk.DownloadEngine.engineIsolates.containsKey(id.value),
+        isFalse);
+    expect(brisk.DownloadEngine.downloadItems.containsKey(id.value),
+        isFalse);
   });
 }

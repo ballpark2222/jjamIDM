@@ -40,12 +40,25 @@ final class EngineHostClient implements DownloadEngine {
     final lines = proc.stdout
         .transform(utf8.decoder)
         .transform(const LineSplitter())
-        .map(RpcMessage.decodeLine)
+        // A stray non-JSON stdout line (dependency print, partial
+        // flush) must not error the stream — that would fire
+        // _hostGone and kill the client over one bad frame.
+        .map((l) {
+          try {
+            return RpcMessage.decodeLine(l);
+          } catch (_) {
+            return null;
+          }
+        })
         .where((m) => m != null)
         .cast<RpcMessage>()
         .asBroadcastStream();
     final client = EngineHostClient._(proc, lines).._listen();
-    final hello = await client._call(EngineProtocol.hello);
+    // A wedged or AV-blocked host never answers — bound the
+    // handshake so spawn fails fast instead of hanging app boot.
+    final hello = await client
+        ._call(EngineProtocol.hello)
+        .timeout(const Duration(seconds: 10));
     final v = (hello['protocol'] as num?)?.toInt();
     if (v == null || !EngineProtocol.supportedVersions.contains(v)) {
       proc.kill();
@@ -160,6 +173,7 @@ final class EngineHostClient implements DownloadEngine {
         userAgent: r.source.userAgent,
         maxConnections: r.maxConnections,
         speedLimitBytesPerSecond: r.speedLimitBytesPerSecond,
+        pageUrl: r.source.originalPageUrl,
       ).toJson();
 
   @override
@@ -251,6 +265,7 @@ final class EngineHostClient implements DownloadEngine {
     String? audioFormatId,
     List<String> subtitleLangs = const [],
     String? outputFileName,
+    Map<String, String> headers = const {},
   }) async {
     final r = await _call(EngineProtocol.mediaEnqueue, {
       'pageUrl': pageUrl,
@@ -259,6 +274,7 @@ final class EngineHostClient implements DownloadEngine {
       if (audioFormatId != null) 'audioFormatId': audioFormatId,
       'subtitleLangs': subtitleLangs,
       if (outputFileName != null) 'outputFileName': outputFileName,
+      if (headers.isNotEmpty) 'headers': headers,
     });
     return TaskId('${r['taskId']}');
   }
@@ -322,6 +338,23 @@ final class EngineHostClient implements DownloadEngine {
   EngineEvent? _eventFromJson(Map<String, Object?> p) {
     switch (p['type']) {
       case 'progress':
+        // Queue-mode hosts synthesize status-carrying progress
+        // frames — a terminal status must surface as the matching
+        // terminal event or subscribers wait forever.
+        switch ('${p['status']}') {
+          case 'completed':
+            return EngineCompleted(
+                outputPath: p['outputPath'] as String?);
+          case 'failed':
+            return EngineFailed(
+              ErrorCode.values.asNameMap()['${p['error']}'] ??
+                  ErrorCode.unknown,
+            );
+          case 'cancelled':
+            return const EngineFailed(ErrorCode.cancelledByUser);
+          case 'paused':
+            return const EnginePaused();
+        }
         return EngineProgress(
           receivedBytes: (p['receivedBytes'] as num?)?.toInt() ?? 0,
           totalBytes: (p['totalBytes'] as num?)?.toInt(),

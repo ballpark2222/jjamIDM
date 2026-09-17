@@ -105,6 +105,7 @@ final class YtDlpResolver implements MediaResolver {
         hasAudio: m['acodec'] != null && m['acodec'] != 'none',
         protocol: '${m['protocol'] ?? 'https'}',
         label: m['format_note'] as String?,
+        url: m['url'] as String?,
       ));
     }
     final subs = <MediaSubtitle>[];
@@ -151,12 +152,15 @@ final class YtDlpResolver implements MediaResolver {
     final steps = <MediaStep>[];
     // Progressive file (has both streams) or plain http → engine.
     // Split A/V or adaptive protocols → yt-dlp fetches itself.
+    // The engine must fetch the format's resolved URL — pageUrl is
+    // the HTML watch page, not the media bytes.
     final direct = video != null &&
         video.protocol.startsWith('http') &&
+        (video.url ?? '').isNotEmpty &&
         audio == null;
     if (direct && video.hasAudio) {
       steps.add(EngineDownloadStep(
-        url: selection.pageUrl,
+        url: video.url!,
         outputFileName: '$name.${video.ext}',
         headers: headers,
       ));

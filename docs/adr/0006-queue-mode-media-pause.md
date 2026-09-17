@@ -157,6 +157,86 @@ Backward-compatible additions only; existing clients are unaffected:
     writes and the `_refreshAndResume` upsert are chained into
     `_lastWrite` so `flush()` can't return while they are in
     flight.
+17. **`pageUrl` rides the wire (additive)** — the browser captures
+    the page a download came from, but `DownloadRequestDto` never
+    carried it, so `DownloadSource.originalPageUrl` was always null
+    and URL-refresh resolvers had nothing to re-fetch on signed-URL
+    expiry. The DTO gained an optional `pageUrl` field (old peers
+    omit it → null; additive, no version bump per this ADR's
+    convention), the native host forwards the validated value, and
+    the server's `toDomain` maps it to `originalPageUrl`.
+18. **Per-task media work dirs** — `media.enqueue`'s default
+    `workDir` (`<tempRoot>/media`) was shared by every task, so two
+    downloads resolving to the same title wrote one output/.part
+    concurrently. The coordinator now namespaces each run under
+    `workDir/<taskId>`; mux/attach steps resolve relative names
+    against it.
+19. **Container-correct subtitle attach** — `attachSubtitles`
+    forced a `.mp4` name and `-c:s mov_text` for any input; an mkv
+    input produced a mislabeled file ffmpeg may reject. The output
+    keeps the input's extension and the subtitle codec follows the
+    container (`srt` for mkv, `webvtt` for webm, `mov_text` else).
+20. **Process/arg hygiene** — `--max-concurrent` is clamped to
+    1..64 (0/negative stalled the queue silently); the `.tools`
+    ancestor walk probed `<d>/../.tools` twice and never `<d>/.tools`
+    (a run rooted at the toolchain's own dir missed it); the media
+    coordinator's workDir mkdir moved inside the run's try so an
+    unwritable path fails the task instead of stranding it in
+    `created`; the native host's shutdown grace for engine-host was
+    raised 2s→12s to cover the server's worst-case 2×5s persistence
+    drain; and the server's dispatch maps `FormatException`/
+    `TypeError` (missing or mistyped params) to `badRequest` instead
+    of a generic engine error.
+21. **Manifest URLs route to the media pipeline** — a bare
+    `.m3u8`/`.mpd` URL classified `directMedia` and went to the file
+    engine, which saved playlist text. The desktop controller now
+    sends manifests through `media.enqueue` when the pipeline is
+    configured (`MediaUrlClassifier.isManifest`); without media
+    support the file path remains as an honest fallback.
+22. **Vendored patch 0006 — header-name-only request logging** —
+    `base_http_download_connection.dart` logged the full request
+    header map, which includes caller-supplied `Cookie` and
+    `Authorization` values (AGENTS.md rule 8 forbids token logging).
+    The vendored file now logs header names only; the change ships
+    as `third_party/brisk-engine/patches/0006-redact-request-header
+    -log.patch` so upstream rebases re-apply it.
+23. **Progressive media fetches the format URL, not the page** —
+    `YtDlpResolver.plan` built `EngineDownloadStep(url:
+    selection.pageUrl)`, so a direct progressive download saved the
+    HTML watch page under an `.mp4` name. `MediaFormat` now carries
+    the resolver-emitted `url` (the signed CDN stream); the engine
+    step uses it, and a format with no resolved URL falls back to
+    the yt-dlp component step rather than fetching the page.
+    `media.probe` surfaces `url` additively.
+24. **Upstream engine statics are reaped on terminal status** —
+    Brisk never removes `DownloadEngine.engineIsolates /
+    engineChannels / downloadItems`; each finished download left an
+    isolate with four periodic timers alive for the host's lifetime.
+    The adapter kills the isolate and drops the map entries when a
+    task reaches completed/canceled/failed — a retry re-runs
+    create()+start(), and partial-file resume lives in the temp
+    segment files, not the isolate.
+25. **Client survives malformed stdout frames** — a stray non-JSON
+    line on the host's stdout threw inside the client's decode
+    `.map`, whose stream error path runs the same `_hostGone` used
+    for process death — one bad frame killed every in-flight call.
+    Decode failures now drop the line.
+26. **Dead-server stall — handled pre-first-byte, limited after** —
+    upstream's connection-reset timer stops retrying once
+    `maxConnectionRetryCount` is exhausted but emits no `failed`
+    status (http_download_engine.dart:152); a download whose server
+    never answers stayed `connecting` forever. The adapter arms a
+    `stallWatchdog` (bounded by retryTimeout × maxRetries) that
+    fails the task `engineUnavailable` — retryable through the
+    scheduler — when zero bytes arrive; progress, pause, and any
+    terminal event disarm it. A mid-download stall after the first
+    byte still relies on upstream reset machinery and can outlive
+    the budget on a half-dead link — that residual case is a
+    recorded limitation, not silently trusted.
+27. **Same-uid re-create is not a cancel target** — the post-start
+    zombie-kill loop now breaks if the id reappears in `_tasks`
+    mid-loop, so a scheduler retry can't be cancelled by the loop
+    cleaning up the previous incarnation.
 
 ## Consequences
 
@@ -173,3 +253,6 @@ Backward-compatible additions only; existing clients are unaffected:
   engine put two process-local repository writers on one file.
 - Extension task mirroring into `chrome.storage.local` is debounced
   (400 ms) — per-event writes could exhaust the write-ops quota.
+- Media artifacts accumulate under `<tempRoot>/media/<taskId>` — a
+  temp cleaner owns reclamation; `remove()` still only drops the
+  record.
