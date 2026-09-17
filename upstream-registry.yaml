@@ -1,0 +1,69 @@
+schema: 2
+# Every GitHub-derived component that reaches runtime/build MUST be declared here.
+# Reference-only projects are marked update_policy: reference_only.
+
+components:
+  engine.brisk:
+    display_name: "Brisk Download Engine"
+    provenance:
+      type: github_source
+      repository: https://github.com/BrisklyDev/brisk_download_engine
+      revision: PINNED_AT_VENDOR_TIME   # see components.lock for exact sha
+      license: MIT
+    distribution:
+      # dev-stage: vendored snapshot. Release-stage target: freedm_integration_bundle
+      type: vendored_source
+      path: third_party/brisk-engine
+      target: freedm_integration_bundle
+      repository: https://github.com/freedm/freedm-components   # placeholder org
+      asset_pattern: "engine.brisk-*.fdmbundle"
+    adapter_api: 1
+    engine_protocol: 1
+    update_class: ENGINE_DRAIN
+    update_policy: verified_one_click
+    patches:
+      - third_party/brisk-engine/patches/0001-remove-dead-path-provider-dep.patch
+
+  media.ytdlp:
+    display_name: "yt-dlp"
+    provenance:
+      type: github_release
+      repository: https://github.com/yt-dlp/yt-dlp
+      license: Unlicense
+    distribution:
+      type: github_release_asset
+      repository: https://github.com/yt-dlp/yt-dlp
+      asset_pattern: "yt-dlp.exe"
+    adapter_api: 1
+    update_class: PROCESS_RESTART
+    update_policy: verified_one_click
+
+  media.ffmpeg:
+    display_name: "FFmpeg"
+    provenance:
+      type: github_release
+      repository: https://github.com/BtbN/FFmpeg-Builds   # distribution under review
+      license: LGPL/GPL (build dependent)
+    distribution:
+      type: github_release_asset
+      repository: https://github.com/BtbN/FFmpeg-Builds
+      asset_pattern: "ffmpeg-*-win64-gpl.zip"
+    adapter_api: 1
+    update_class: PROCESS_RESTART
+    update_policy: verified_one_click
+
+  # ---- reference only: UX/architecture study, no runtime code ----
+  abdm:
+    display_name: "AB Download Manager"
+    provenance:
+      type: github_reference
+      repository: https://github.com/amir1376/ab-download-manager
+      license: Apache-2.0
+    update_policy: reference_only
+
+  brisk-browser-extension:
+    display_name: "Brisk Browser Extension"
+    provenance:
+      type: github_reference
+      repository: https://github.com/BrisklyDev/brisk-browser-extension
+    update_policy: reference_only

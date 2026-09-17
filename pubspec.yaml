@@ -1,0 +1,30 @@
+name: freedm_workspace
+description: FreeDM workspace root — manages all Dart packages.
+publish_to: none
+
+environment:
+  sdk: ^3.13.0
+
+workspace:
+  - packages/core-domain
+  - packages/application
+  - packages/persistence
+  - packages/event-bus
+  - packages/download-api
+  - packages/engine-protocol
+  - packages/media-api
+  - packages/browser-api
+  - packages/plugin-api
+  - packages/update-api
+  - packages/adapter-brisk
+  - packages/adapter-ytdlp
+  - packages/adapter-ffmpeg
+  - apps/engine-host
+  - apps/desktop
+  - apps/updater
+  - plugin-host
+  - test-server
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.26.0

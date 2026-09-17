@@ -1,0 +1,11 @@
+name: freedm_desktop
+description: "FreeDM freedm_desktop."
+publish_to: none
+version: 0.1.0
+environment:
+  sdk: ^3.13.0
+resolution: workspace
+dependencies:
+dev_dependencies:
+  test: ^1.26.0
+  lints: ^6.0.0

@@ -1,0 +1,17 @@
+name: architecture
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  boundaries:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: dart pub get
+      - name: dependency boundary check
+        run: dart tools/architecture_test/check_imports.dart

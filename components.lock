@@ -1,0 +1,24 @@
+schema = 2
+
+[freedm]
+version = "0.1.0"
+
+[engine_brisk]
+component_id = "engine.brisk"
+upstream_repo = "BrisklyDev/brisk_download_engine"
+upstream_revision = "TO_PIN_ON_VENDOR"
+bundle_version = "dev"
+engine_protocol = 1
+state_schema = 1
+sha256 = "TO_COMPUTE_ON_BUNDLE"
+
+[media_ytdlp]
+component_id = "media.ytdlp"
+upstream_repo = "yt-dlp/yt-dlp"
+version = "TO_PIN_ON_INSTALL"
+sha256 = "TO_COMPUTE_ON_INSTALL"
+
+[media_ffmpeg]
+component_id = "media.ffmpeg"
+version = "TO_PIN_ON_INSTALL"
+sha256 = "TO_COMPUTE_ON_INSTALL"

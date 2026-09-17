@@ -1,0 +1,36 @@
+# Dart / Pub
+.dart_tool/
+.packages
+pubspec.lock
+build/
+*.iml
+
+# Workspace resolution artifacts
+.pub/
+
+# Rust
+target/
+Cargo.lock
+
+# Node / browser extension
+node_modules/
+browser/extension/dist/
+
+# Downloaded components / vendored toolchains
+.tools/
+*.fdmbundle
+*.fdmpkg
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
+
+# Test outputs
+coverage/
+*.log
+
+# Local data dirs
+data/
+downloads/
