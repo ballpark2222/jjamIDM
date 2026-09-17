@@ -111,6 +111,7 @@ final class EngineHostClient implements DownloadEngine {
   /// in-flight call (they would hang forever otherwise) and close
   /// per-task event streams so subscribers see a clean end.
   void _hostGone() {
+    _dead = true;
     for (final c in _pending.values) {
       if (!c.isCompleted) {
         c.completeError(StateError('engine host exited'));
@@ -122,15 +123,30 @@ final class EngineHostClient implements DownloadEngine {
     }
     _taskEvents.clear();
     _known.clear();
+    if (!_mediaTasks.isClosed) unawaited(_mediaTasks.close());
   }
+
+  /// Set once the host is gone — later [_call]s must fail fast
+  /// instead of parking a completer in [_pending] that no response
+  /// will ever complete (writes to a dead stdin error out
+  /// asynchronously, leaving the future hanging).
+  bool _dead = false;
 
   Future<Map<String, Object?>> _call(String method,
       [Map<String, Object?> params = const {}]) {
+    if (_dead) {
+      return Future.error(StateError('engine host exited'));
+    }
     final id = _nextId++;
     final c = Completer<Map<String, Object?>>();
     _pending[id] = c;
-    _proc.stdin.writeln(
-        RpcRequest(id: id, method: method, params: params).encode());
+    try {
+      _proc.stdin.writeln(
+          RpcRequest(id: id, method: method, params: params).encode());
+    } catch (e) {
+      _pending.remove(id);
+      c.completeError(StateError('engine host write failed: $e'));
+    }
     return c.future;
   }
 
@@ -263,11 +279,16 @@ final class EngineHostClient implements DownloadEngine {
 
   @override
   Stream<EngineEvent> events(TaskId id) {
+    if (_dead) return const Stream.empty();
     final c = _taskEvents.putIfAbsent(
         id.value, () => StreamController<EngineEvent>());
-    // Fire-and-forget subscribe so the host starts streaming.
+    // Fire-and-forget subscribe so the host starts streaming. The
+    // error is swallowed — a dead host already closed this stream
+    // via _hostGone, and a live-host RPC failure is reported to the
+    // caller's other calls.
     unawaited(_call(
-        EngineProtocol.taskSubscribeEvents, {'taskId': id.value}));
+            EngineProtocol.taskSubscribeEvents, {'taskId': id.value})
+        .catchError((_) => <String, Object?>{}));
     return c.stream;
   }
 

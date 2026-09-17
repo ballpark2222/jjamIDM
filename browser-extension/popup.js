@@ -64,7 +64,14 @@ async function refresh() {
         <button data-a="resume">▶</button>
         <button data-a="cancel">✕</button>`}</div>`;
     div.querySelectorAll('button').forEach((b) => {
-      b.onclick = async () => { await sendBg({ cmd: b.dataset.a, taskId: id }); };
+      b.onclick = async () => {
+        // A parked (created/ready) task isn't paused — resume() is a
+        // no-op on it; `start` admits it into the queue. Paused
+        // (incl. media) tasks still go through resume.
+        const a = b.dataset.a === 'resume' &&
+            (st === 'created' || st === 'ready') ? 'start' : b.dataset.a;
+        await sendBg({ cmd: a, taskId: id });
+      };
     });
     box.appendChild(div);
   }

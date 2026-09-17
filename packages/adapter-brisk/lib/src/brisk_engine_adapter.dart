@@ -327,17 +327,21 @@ final class BriskEngineAdapter implements DownloadEngine {
   /// Sends pause until the engine acknowledges it with a paused
   /// status (bounded). Upstream drops — actually rewrites to a start
   /// command — any pause that arrives before connection channels are
-  /// registered, which is exactly the post-start window. [epoch]
+  /// registered, and its pauseOnFinalHandshake deferral is dead code.
+  /// The first progress message proves channels are live, so sends
+  /// only start then (or after ~600ms for stalled servers). [epoch]
   /// abandons the loop when a newer pause/resume/cancel supersedes
   /// this request.
   Future<void> _pauseUntilAcked(TaskId id, int epoch) async {
-    for (var i = 0; i < 20; i++) {
+    for (var i = 0; i < 60; i++) {
       final t = _tasks[id.value];
       if (t == null || t.pauseAcked || t.pauseEpoch != epoch) return;
-      try {
-        brisk.DownloadEngine.pause(id.value);
-      } catch (_) {
-        return; // engine forgot the uid — nothing left to pause
+      if (t.lastProgress != null || i > 3) {
+        try {
+          brisk.DownloadEngine.pause(id.value);
+        } catch (_) {
+          return; // engine forgot the uid — nothing left to pause
+        }
       }
       await Future<void>.delayed(const Duration(milliseconds: 150));
     }

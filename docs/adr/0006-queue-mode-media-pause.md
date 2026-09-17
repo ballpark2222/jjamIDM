@@ -51,6 +51,15 @@ Backward-compatible additions only; existing clients are unaffected:
    the engine isolate registers the task used to crash on null
    internal maps; a pre-start pause is now queued and applied the
    moment the task starts.
+8. **Pause acknowledgement loop** — upstream silently drops a pause
+   that arrives before connection channels exist (`sendToDownloadIsolates`
+   rewrites it to `startInitial`; the `pauseOnFinalHandshake`
+   deferral is dead code — the send is commented out). The adapter
+   therefore re-sends pause until the engine reports a paused
+   status (`pauseAcked`), gated on the first progress message which
+   proves connection channels are live; `pauseEpoch` abandons a
+   stale loop when resume/cancel supersedes it. The same
+   retry-until-stopped applies to a cancel that raced `start()`.
 
 ## Consequences
 

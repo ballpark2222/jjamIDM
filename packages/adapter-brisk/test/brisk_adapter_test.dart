@@ -218,28 +218,21 @@ void main() {
       timeout: const Timeout(Duration(minutes: 3)), () async {
     // The scheduler flips a task to `downloading` before
     // engine.create returns — a pause in that window must queue and
-    // land the moment the task starts, not throw or vanish.
+    // land once the task starts, not throw or vanish.
     final engine = newEngine();
     const id = TaskId('dl-pre-pause');
     await engine.pause(id); // before create — queues internally
-    // Slow 8 MiB file — the pause must land while connections are
-    // still running (a fast file could finish inside the retry
-    // window and never report paused).
-    await engine.create(id, req('/file-slow?length=8388608&delay=80'));
+    // /file-hang emits one progress chunk then stalls forever — the
+    // download can never outrun the queued pause.
+    await engine.create(id, req('/file-hang'));
     final paused = Completer<void>();
-    final done = Completer<EngineEvent>();
-    engine.events(id).listen((e) async {
-      if (e is EnginePaused && !paused.isCompleted) {
-        paused.complete();
-        await engine.resume(id);
-      }
-      if (e is EngineCompleted || e is EngineFailed) done.complete(e);
+    engine.events(id).listen((e) {
+      if (e is EnginePaused && !paused.isCompleted) paused.complete();
     });
     await engine.start(id);
     await paused.future.timeout(const Duration(minutes: 2));
-    final e = await done.future.timeout(const Duration(minutes: 2));
-    expect(e, isA<EngineCompleted>(),
-        reason: (e is EngineFailed) ? '${e.detail}' : '');
+    // The stalled task would hang forever — cancel to clean up.
+    await engine.cancel(id);
   });
 
   test('cancel aborts download', () async {

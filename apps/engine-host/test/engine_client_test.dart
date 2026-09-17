@@ -143,6 +143,26 @@ void main() {
     }
   });
 
+  test('calls fail fast after the host exits', () async {
+    final temp = await Directory.systemTemp.createTemp('ehc-d-t');
+    final c = await EngineHostClient.spawn([
+      Platform.resolvedExecutable,
+      await hostMainPath(),
+      '--temp-root',
+      temp.path,
+    ]);
+    await c.shutdown();
+    // stdout's onDone marks the client dead asynchronously — give
+    // it a beat so the next call exercises the fail-fast path
+    // rather than the still-open pending map.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await expectLater(
+        c.status(const TaskId('gone')), throwsStateError);
+    // A dead host's event stream ends immediately, not hangs.
+    await expectLater(
+        c.events(const TaskId('gone')).isEmpty, completion(isTrue));
+  });
+
   test('hello negotiates protocol v1 + capabilities', () async {
     final caps = await client.capabilities();
     expect(caps.segmentedDownload, isTrue);
