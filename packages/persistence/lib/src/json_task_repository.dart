@@ -119,7 +119,10 @@ final class JsonTaskRepository implements TaskRepository {
           t.status == DownloadStatus.created ||
           t.status == DownloadStatus.paused ||
           t.status == DownloadStatus.retryWait ||
-          t.status == DownloadStatus.ready)
+          t.status == DownloadStatus.ready ||
+          // urlExpired is a parked state awaiting refresh — without
+          // it a crash mid-refresh strands the task forever.
+          t.status == DownloadStatus.urlExpired)
       .toList();
 
   @override

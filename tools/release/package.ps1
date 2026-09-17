@@ -54,23 +54,50 @@ if (Get-Command flutter -ErrorAction SilentlyContinue) {
 
 # 4. media tool binaries — ship alongside the app so media
 #    downloads work before component-manager channels exist.
+#    Mirror engine-host's findUnderTools: flat <name>, <vendor>/<name>,
+#    <vendor>/bin/<name>, <vendor>/<ver>/bin/<name>.
+function Find-UnderTools([string]$Dir, [string]$Name) {
+  if (-not (Test-Path $Dir)) { return $null }
+  $flat = Join-Path $Dir $Name
+  if (Test-Path $flat) { return $flat }
+  foreach ($vendor in (Get-ChildItem -Directory $Dir -ErrorAction SilentlyContinue)) {
+    foreach ($cand in @((Join-Path $vendor.FullName $Name),
+                        (Join-Path $vendor.FullName "bin/$Name"))) {
+      if (Test-Path $cand) { return $cand }
+    }
+    foreach ($inner in (Get-ChildItem -Directory $vendor.FullName -ErrorAction SilentlyContinue)) {
+      $cand = Join-Path $inner.FullName "bin/$Name"
+      if (Test-Path $cand) { return $cand }
+    }
+  }
+  return $null
+}
 $ToolsDir = "$PSScriptRoot/../../../.tools"
 $ComponentOut = "$root/$Out/components"
 New-Item -ItemType Directory -Force -Path $ComponentOut | Out-Null
-if (Test-Path "$ToolsDir/yt-dlp.exe") {
-  Copy-Item "$ToolsDir/yt-dlp.exe" $ComponentOut
+$Ytdlp = Find-UnderTools $ToolsDir 'yt-dlp.exe'
+$Ffmpeg = Find-UnderTools $ToolsDir 'ffmpeg.exe'
+if ($Ytdlp) { Copy-Item $Ytdlp $ComponentOut } else {
+  Write-Warning "yt-dlp.exe not under $ToolsDir — packaged media downloads won't work"
 }
-$FfmpegBin = "$ToolsDir/ffmpeg-extract/ffmpeg-9.0.1-essentials_build/bin"
-if (Test-Path $FfmpegBin) {
-  Copy-Item "$FfmpegBin/ffmpeg.exe","$FfmpegBin/ffprobe.exe" $ComponentOut -ErrorAction SilentlyContinue
+if ($Ffmpeg) {
+  Copy-Item $Ffmpeg $ComponentOut
+  $probe = Join-Path (Split-Path $Ffmpeg) 'ffprobe.exe'
+  if (Test-Path $probe) { Copy-Item $probe $ComponentOut }
+} else {
+  Write-Warning "ffmpeg.exe not under $ToolsDir — packaged media downloads won't work"
 }
 
 # 4b. The browser-spawned engine runs from desktop\ — it resolves
 #     tools at <exeDir>\components, so the staged set must ship there
 #     too. This copy must run AFTER step 4: on a clean build
-#     $ComponentOut doesn't exist until now.
+#     $ComponentOut doesn't exist until now. Remove a stale dest
+#     first — Copy-Item into an existing dir would nest
+#     components\components and the engine resolves nothing.
 if (Test-Path "$root/$Out/desktop/jjamidm-engine-host.exe") {
-  Copy-Item -Recurse -Force $ComponentOut "$root/$Out/desktop/components"
+  $dest = "$root/$Out/desktop/components"
+  if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+  Copy-Item -Recurse -Force $ComponentOut $dest
 }
 
 # 5. browser extension (loaded unpacked / developer mode)

@@ -54,7 +54,11 @@ $config = [ordered]@{
   engineCommand = @(
     $engineExe,
     '--temp-root', "$dataDir\engine-temp",
-    '--data-dir', $dataDir
+    # Browser engine gets its own data dir — sharing
+    # <dataDir>\media-tasks with the desktop's engine would put two
+    # process-local JsonTaskRepository writers on one tasks.json
+    # (read-modify-write → last-write-wins record loss).
+    '--data-dir', "$dataDir\browser"
   )
   engineCwd = "$RcDir\desktop"
   downloadDir = $DownloadDir

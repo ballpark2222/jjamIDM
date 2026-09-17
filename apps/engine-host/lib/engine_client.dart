@@ -278,6 +278,27 @@ final class EngineHostClient implements DownloadEngine {
   Future<void> removeMedia(TaskId id) async =>
       _call(EngineProtocol.mediaRemove, {'taskId': id.value});
 
+  /// Durable snapshot of every media task the host tracks —
+  /// including tasks recovered to a terminal state before this
+  /// client attached (media.event is broadcast-only; anything
+  /// emitted before [mediaTasks] had a listener is only reachable
+  /// through this pull). Soft-fails to an empty list on a v1 host,
+  /// a media-less v2 host, a wedged host, or a malformed frame —
+  /// the live event stream stays the source of truth.
+  Future<List<DownloadTask>> listMediaTasks() async {
+    if (!supportsMedia) return const [];
+    try {
+      final r = await _call(EngineProtocol.mediaList)
+          .timeout(const Duration(seconds: 10));
+      return [
+        for (final t in (r['tasks'] as List? ?? const []))
+          TaskCodec.decode((t as Map).cast<String, Object?>())
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
+
   /// Raw task.status result — `known` says whether the host still
   /// tracks the task; queue mode also reports the scheduler status.
   Future<Map<String, Object?>> status(TaskId id) async =>
@@ -334,6 +355,14 @@ final class EngineHostClient implements DownloadEngine {
       await _call(EngineProtocol.shutdown)
           .timeout(const Duration(seconds: 2));
     } catch (_) {}
-    _proc.kill();
+    // The host acks before flushing persistence — force-killing
+    // immediately could still land mid-write. Let it exit on its
+    // own first; only a wedged process pays the kill. Bound must
+    // exceed the server's worst-case drain (2 × 5s flushes).
+    try {
+      await _proc.exitCode.timeout(const Duration(seconds: 12));
+    } catch (_) {
+      _proc.kill();
+    }
   }
 }

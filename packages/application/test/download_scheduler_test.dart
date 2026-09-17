@@ -49,8 +49,16 @@ final class FakeEngine implements DownloadEngine {
           acceptsRanges: true,
           finalUrl: request.source.effectiveUrl);
 
+  /// Number of create() calls that should throw before succeeding —
+  /// models a transient engine/isolate spawn failure.
+  int createFailures = 0;
+
   @override
   Future<EngineTaskHandle> create(TaskId id, DownloadRequest request) async {
+    if (createFailures > 0) {
+      createFailures--;
+      throw StateError('engine spawn failed');
+    }
     created.add(id.value);
     controllers[id.value] = StreamController<EngineEvent>();
     return EngineTaskHandle(engineTaskId: id.value);
@@ -108,6 +116,34 @@ final class GatedStartEngine extends FakeEngine {
     started.add(id.value);
     await startGate.future;
   }
+}
+
+/// Repo wrapper whose writes can be held on a gate — models a slow
+/// disk so tests can observe whether flush() really drains a write
+/// that is already in flight.
+final class GatedRepo implements TaskRepository {
+  GatedRepo(this.inner);
+  final TaskRepository inner;
+  var _gate = Completer<void>()..complete();
+
+  void closeGate() => _gate = Completer<void>();
+  void openGate() => _gate.complete();
+
+  @override
+  Future<void> upsert(DownloadTask task) =>
+      _gate.future.then((_) => inner.upsert(task));
+  @override
+  Future<DownloadTask?> get(TaskId id) => inner.get(id);
+  @override
+  Future<List<DownloadTask>> list({String? queueId}) =>
+      inner.list(queueId: queueId);
+  @override
+  Future<List<DownloadTask>> listActive() => inner.listActive();
+  @override
+  Future<void> delete(TaskId id) => inner.delete(id);
+  @override
+  Future<int> countByEngineBundle(String componentId, String version) =>
+      inner.countByEngineBundle(componentId, version);
 }
 
 void main() {
@@ -365,6 +401,127 @@ void main() {
     expect(e2.started, contains(running.id.value));
     // Paused task is NOT started until user resumes.
     expect(e2.started, isNot(contains(idle.id.value)));
+    await s2.dispose();
+  });
+
+  test('engine create failure retries instead of dying instantly',
+      () async {
+    final e = FakeEngine()..createFailures = 1;
+    final s = sched(e);
+    final t = await s.enqueue(req(),
+        retryPolicy: const RetryPolicy(
+            maxAttempts: 2, initialDelay: Duration(milliseconds: 30)));
+    // create() threw → retryable engineUnavailable → retryWait,
+    // then the re-armed timer re-dispatches and the second
+    // create+start succeeds.
+    await until(s, t.id, (x) => x.status == DownloadStatus.retryWait);
+    final back = await until(
+        s, t.id, (x) => x.status == DownloadStatus.downloading);
+    expect(back.failedAttempts, 1);
+    expect(e.created, [t.id.value]);
+    expect(e.started, [t.id.value]);
+    await s.dispose();
+  });
+
+  test('cancel during a failing engine start stays cancelled',
+      () async {
+    final e = GatedStartEngine();
+    final s = sched(e);
+    final t = await s.enqueue(req());
+    await until(s, t.id, (x) => x.status == DownloadStatus.downloading);
+    for (var i = 0; i < 100 && e.started.isEmpty; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    await s.cancel(t.id);
+    await until(s, t.id, (x) => x.status == DownloadStatus.cancelled);
+    // Engine start then fails — the dispatch-failure path must not
+    // resurrect the terminal task (cancelled→failed would throw an
+    // InvalidTransitionError inside the scheduler's async void).
+    e.startGate.completeError(StateError('spawn died'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(s.task(t.id)!.status, DownloadStatus.cancelled);
+    await s.dispose();
+  });
+
+  test('restart recovery: retryWait re-arms its backoff timer',
+      () async {
+    final e1 = FakeEngine();
+    final s1 = sched(e1);
+    final t = await s1.enqueue(req(),
+        retryPolicy: const RetryPolicy(
+            maxAttempts: 3, initialDelay: Duration(milliseconds: 30)));
+    await until(s1, t.id, (x) => x.status == DownloadStatus.downloading);
+    e1.emit(t.id, const EngineFailed(ErrorCode.connectionDropped));
+    await until(s1, t.id, (x) => x.status == DownloadStatus.retryWait);
+    await repo.pending; // the retryWait record must be durable
+    await s1.dispose(); // dies with the timer still pending
+
+    final e2 = FakeEngine();
+    final s2 = sched(e2);
+    await s2.recover();
+    // The re-armed timer fires → reattach → downloading again.
+    final back = await until(
+        s2, t.id, (x) => x.status == DownloadStatus.downloading);
+    expect(back.failedAttempts, 1);
+    // Status flips before engine.create lands — poll for it.
+    for (var i = 0; i < 50 && !e2.created.contains(t.id.value); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(e2.created, contains(t.id.value));
+    expect(e2.started, contains(t.id.value));
+    await s2.dispose();
+  });
+
+  test('flush drains a debounce write that already fired', () async {
+    final gated = GatedRepo(repo);
+    final e = FakeEngine();
+    final s = DownloadScheduler(
+      engine: e,
+      repository: gated,
+      eventBus: bus,
+      idGenerator: nextId,
+    );
+    final t = await s.enqueue(req());
+    await until(s, t.id, (x) => x.status == DownloadStatus.downloading);
+
+    // Close the gate, emit progress, let the debounce timer fire —
+    // its upsert is now in flight but not reachable via the
+    // _persistDebounce map (the timer already removed its key).
+    gated.closeGate();
+    e.emit(t.id,
+        const EngineProgress(receivedBytes: 500, totalBytes: 1000));
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+
+    var flushed = false;
+    final f = s.flush().then((_) => flushed = true);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(flushed, isFalse,
+        reason: 'flush must await the in-flight debounced write');
+    gated.openGate();
+    await f;
+    expect(flushed, isTrue);
+    expect((await repo.get(t.id))!.receivedBytes, 500);
+    await s.dispose();
+  });
+
+  test('remove deletes a repo-only terminal record after restart',
+      () async {
+    final e1 = FakeEngine(autoComplete: true);
+    final s1 = sched(e1);
+    final t = await s1.enqueue(req());
+    await until(
+        s1, t.id, (x) => x.status == DownloadStatus.completed);
+    await s1.dispose(); // repo keeps the terminal record
+
+    // Fresh scheduler: recover() loads only active tasks, so the
+    // completed record isn't in _tasks — remove() must still delete
+    // it instead of dying on cancel's 'unknown task'.
+    final s2 = sched(FakeEngine());
+    await s2.recover();
+    expect((await s2.tasks()).map((x) => x.id.value),
+        contains(t.id.value));
+    await s2.remove(t.id);
+    expect(await s2.tasks(), isEmpty);
     await s2.dispose();
   });
 }

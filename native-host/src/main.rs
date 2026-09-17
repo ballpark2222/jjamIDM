@@ -398,22 +398,27 @@ fn engine_call(
 fn ensure_engine(
     engine: &mut Option<EngineClient>,
     cfg: &Config,
-    subs: &BTreeSet<String>,
+    subs: &mut BTreeSet<String>,
 ) -> Result<(), String> {
     if engine.is_some() {
         return Ok(());
     }
     let mut e = spawn_engine(cfg)?;
-    for id in subs {
+    let mut dead = Vec::new();
+    for id in subs.iter() {
         let mut p = Map::new();
         p.insert("taskId".into(), json!(id));
         match e.call("task.subscribeEvents", p) {
             // RPC error = task is terminal/gone on the new host —
-            // harmless. A transport error means the pipe is dead.
-            Err(err) if err.starts_with("engine error") => {}
+            // prune it so a dead id isn't replayed on every respawn.
+            // A transport error means the pipe is dead.
+            Err(err) if err.starts_with("engine error") => dead.push(id.clone()),
             Err(err) => return Err(err),
             Ok(_) => {}
         }
+    }
+    for id in dead {
+        subs.remove(&id);
     }
     *engine = Some(e);
     Ok(())
@@ -620,6 +625,18 @@ fn handle(
             // host restart, so control commands must reach the engine
             // even when this is the first message after boot.
             ensure_engine(engine, cfg, subs)?;
+            // A respawned engine lost every subscription — replay
+            // covered only ids in `subs`. A persisted task (parked
+            // before the restart, or simply never subscribed this
+            // session) started/resumed now would run with no events
+            // reaching the browser. Re-subscribe first; unknown ids
+            // fail subscribeEvents, which is fine — the command
+            // itself reports the real error.
+            let mut sp = Map::new();
+            sp.insert("taskId".into(), json!(id));
+            if engine_call(engine, "task.subscribeEvents", sp).is_ok() {
+                subs.insert(id.clone());
+            }
             let method = format!("task.{}", msg.command);
             let mut p = Map::new();
             p.insert("taskId".into(), json!(id));

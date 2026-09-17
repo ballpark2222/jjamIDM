@@ -315,11 +315,40 @@ final class EngineHostServer {
         await m.remove(TaskId(taskId()));
         return const {};
 
+      case EngineProtocol.mediaList:
+        final m = media;
+        if (m == null) {
+          throw UnsupportedError('media pipeline not configured');
+        }
+        return {
+          'tasks': [
+            for (final t in await m.tasks()) TaskCodec.encode(t)
+          ],
+        };
+
       case EngineProtocol.shutdown:
         _send(RpcResponse.ok(req.id, const {}).encode());
+        // Flush the ack before the slow drain — exit() drops
+        // buffered sink data, and the client's shutdown call has a
+        // short timeout on this response.
+        try {
+          await _out.flush();
+        } catch (_) {}
         for (final s in _eventSubs.values) {
           await s.cancel();
         }
+        // Drain pending persistence — a transition that landed in
+        // the final debounce/write-queue window must reach disk or
+        // it resurrects on the next launch. Bounded: a wedged FS
+        // must not hang shutdown.
+        try {
+          await scheduler?.flush()
+              .timeout(const Duration(seconds: 5));
+          await media?.flush().timeout(const Duration(seconds: 5));
+        } catch (_) {}
+        try {
+          await _out.flush();
+        } catch (_) {}
         exit(0);
     }
     throw UnsupportedError('unknown method ${req.method}');
@@ -329,6 +358,13 @@ final class EngineHostServer {
     _eventSubs[taskId]?.cancel();
     final s = scheduler;
     if (s != null) {
+      // Unknown id (terminal record dropped by recover, removed, or
+      // never created): error out instead of registering a changes
+      // listener that can never match — the native host prunes its
+      // replay set on this error.
+      if (s.task(TaskId(taskId)) == null) {
+        throw StateError('unknown task $taskId');
+      }
       // Queue mode: engine.create may not have run yet (task parked
       // or waiting for a slot), so a raw engine.events() here would
       // be empty forever. Scheduler task changes carry status+bytes;
@@ -396,12 +432,10 @@ final class EngineHostServer {
           _eventSubs.remove(taskId)?.cancel();
         }
       });
-      final cur = s.task(TaskId(taskId));
-      if (cur != null) {
-        attachEngine();
-        emitStatus(cur);
-        if (cur.status.isTerminal) _eventSubs.remove(taskId)?.cancel();
-      }
+      final cur = s.task(TaskId(taskId))!;
+      attachEngine();
+      emitStatus(cur);
+      if (cur.status.isTerminal) _eventSubs.remove(taskId)?.cancel();
       return;
     }
     _eventSubs[taskId] =

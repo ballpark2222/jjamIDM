@@ -108,5 +108,13 @@ void main() {
             (f) => f.lengthSync() > 0),
         isTrue);
     await sub.cancel();
+
+    // media.list snapshot — a client that missed the broadcast
+    // still sees the task's terminal record.
+    final listed = await client!.listMediaTasks();
+    expect(listed.map((e) => e.id), contains(id));
+    expect(
+        listed.singleWhere((e) => e.id == id).kind,
+        TaskKind.media);
   }, timeout: const Timeout(Duration(minutes: 5)));
 }

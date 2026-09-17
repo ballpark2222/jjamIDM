@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'dart:ui' show AppExitResponse;
+
 import 'package:flutter/material.dart';
 import 'package:freedm_application/freedm_application.dart';
 import 'package:freedm_core_domain/freedm_core_domain.dart';
@@ -158,6 +160,25 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   var _tab = 0;
+  late final AppLifecycleListener _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    // Flush scheduler persistence + let the engine host drain its
+    // own stores before the process exits — closing the window used
+    // to kill both mid-write (debounced progress, media repo).
+    _lifecycle = AppLifecycleListener(onExitRequested: () async {
+      await widget.controller.shutdown();
+      return AppExitResponse.exit;
+    });
+  }
+
+  @override
+  void dispose() {
+    _lifecycle.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

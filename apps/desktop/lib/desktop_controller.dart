@@ -62,8 +62,23 @@ final class DesktopController extends ChangeNotifier {
       Map.unmodifiable(_componentStates);
 
   Future<void> loadExisting() async {
-    for (final t in await _scheduler.tasks()) {
-      _tasks[t.id.value] = t;
+    // Snapshots merge under live events — a stream update that
+    // arrived while the pull was in flight is newer and must win.
+    void merge(Iterable<DownloadTask> list) {
+      for (final t in list) {
+        final cur = _tasks[t.id.value];
+        if (cur == null || !t.updatedAt.isBefore(cur.updatedAt)) {
+          _tasks[t.id.value] = t;
+        }
+      }
+    }
+    merge(await _scheduler.tasks());
+    // Restored media tasks live only in the host's media repo —
+    // media.event emissions fired before this client attached are
+    // gone, so pull the durable list explicitly.
+    final me = _mediaEngine;
+    if (me != null && me.supportsMedia) {
+      merge(await me.listMediaTasks());
     }
     await refreshComponents();
     notifyListeners();
@@ -178,6 +193,19 @@ final class DesktopController extends ChangeNotifier {
       lastError = '$e';
       notifyListeners();
     }
+  }
+
+  /// App-exit path: land pending repo writes locally, then ask the
+  /// engine host to flush its own stores and exit. Without this the
+  /// last debounce window of progress and any in-flight media
+  /// transition are lost (the host dies on stdin EOF mid-write).
+  Future<void> shutdown() async {
+    try {
+      await _scheduler.flush().timeout(const Duration(seconds: 5));
+    } catch (_) {}
+    try {
+      await _mediaEngine?.shutdown();
+    } catch (_) {}
   }
 
   @override

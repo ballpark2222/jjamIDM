@@ -18,6 +18,7 @@ const LABELS = {
   downloadingAudio: '오디오 다운로드', muxing: '합치는 중',
   subtitleProcessing: '자막 처리',
   completed: '완료', failed: '실패', cancelled: '취소됨',
+  urlExpired: '링크 만료 — 재시도 대기',
 };
 
 async function sendBg(m) {

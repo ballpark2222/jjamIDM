@@ -73,9 +73,22 @@ final class MediaDownloadCoordinator {
   final _tasks = <String, DownloadTask>{};
   final _runs = <String, _MediaRun>{};
   final _changes = StreamController<DownloadTask>.broadcast();
+  Future<void> _lastWrite = Future<void>.value();
 
   /// Task updates for UI.
   Stream<DownloadTask> get changes => _changes.stream;
+
+  /// Every media task the coordinator can still report — the
+  /// durable repo list overlaid with in-memory state so a
+  /// just-emitted transition isn't lost to a pending persistence
+  /// write. Backs `media.list` for clients that attached after the
+  /// broadcast events already fired.
+  Future<List<DownloadTask>> tasks() async {
+    final map = {for (final t in await _repo.list()) t.id.value: t};
+    map.addAll(_tasks);
+    return map.values.toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+  }
 
   DownloadTask? task(TaskId id) => _tasks[id.value];
 
@@ -132,13 +145,15 @@ final class MediaDownloadCoordinator {
 
   /// Remove a media task entirely — cancels any in-flight work,
   /// then drops the record and run state so it neither lists nor
-  /// recovers on the next host start. Terminal tasks delete
-  /// straight away; workDir artifacts under temp-root are left
-  /// for the temp cleaner (the dir is shared across tasks).
+  /// recovers on the next host start. A task restored to a terminal
+  /// state lives only in the repo (recover() loads active records
+  /// into memory), so the repo delete must run even when the task
+  /// isn't in [_tasks] — otherwise it resurfaces on every restart.
+  /// workDir artifacts under temp-root are left for the temp
+  /// cleaner (the dir is shared across tasks).
   Future<void> remove(TaskId id) async {
     final t = _tasks[id.value];
-    if (t == null) return;
-    if (!t.status.isTerminal) await cancel(id);
+    if (t != null && !t.status.isTerminal) await cancel(id);
     _tasks.remove(id.value);
     _runs.remove(id.value);
     await _repo.delete(id);
@@ -198,7 +213,10 @@ final class MediaDownloadCoordinator {
     }
   }
 
-  Future<void> dispose() => _changes.close();
+  Future<void> dispose() async {
+    await flush();
+    await _changes.close();
+  }
 
   // ------------------------------------------------------------------
 
@@ -433,8 +451,19 @@ final class MediaDownloadCoordinator {
         at: _clock().toUtc(), lastError: lastError);
     _tasks[t.id.value] = u;
     if (!_changes.isClosed) _changes.add(u);
-    unawaited(_repo.upsert(u));
+    _lastWrite = _repo.upsert(u);
+    unawaited(_lastWrite);
     return u;
+  }
+
+  /// Await the last queued repo write — repo writes chain on one
+  /// queue, so this drains everything written before it. Called on
+  /// shutdown so a just-completed transition isn't lost to an
+  /// abrupt exit (the task would resurface as failed on restart).
+  Future<void> flush() async {
+    try {
+      await _lastWrite;
+    } catch (_) {}
   }
 
   void _fail(DownloadTask t, ErrorCode code, String detail) {

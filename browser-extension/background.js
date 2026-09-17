@@ -117,6 +117,18 @@ function updateBadge() {
   chrome.action.setBadgeBackgroundColor({ color: '#1565c0' });
 }
 
+// storage.local has a write-ops quota — progress events arrive
+// several times a second per task, so coalesce into a short flush.
+let tasksFlushTimer = null;
+function flushTasksSoon() {
+  if (tasksFlushTimer) return;
+  tasksFlushTimer = setTimeout(() => {
+    tasksFlushTimer = null;
+    chrome.storage.local.set({ tasks: Object.fromEntries(tasks) });
+    updateBadge();
+  }, 400);
+}
+
 function ensurePort() {
   if (port) return port;
   port = chrome.runtime.connectNative(HOST_NAME);
@@ -151,8 +163,7 @@ function ensurePort() {
         notify('jjamIDM — 다운로드 실패',
             rec.error || rec.detail || rec.lastError || id);
       }
-      chrome.storage.local.set({ tasks: Object.fromEntries(tasks) });
-      updateBadge();
+      flushTasksSoon();
       return;
     }
     if (msg && msg.requestId != null) {

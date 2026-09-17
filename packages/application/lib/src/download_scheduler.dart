@@ -49,6 +49,7 @@ final class DownloadScheduler {
   final _subs = <String, StreamSubscription<EngineEvent>>{};
   final _retryTimers = <String, Timer>{};
   final _persistDebounce = <String, Timer>{};
+  Future<void> _lastWrite = Future<void>.value();
   final _taskLimits = <String, int?>{};
   final _changes = StreamController<DownloadTask>.broadcast();
   final _stateMachine = const TaskStateMachine();
@@ -107,8 +108,17 @@ final class DownloadScheduler {
         case DownloadStatus.resolving:
         case DownloadStatus.resolvingMedia:
         case DownloadStatus.ready:
-        case DownloadStatus.retryWait:
           unawaited(_resolveAndDispatch(t));
+          break;
+        case DownloadStatus.retryWait:
+          // Backoff timers are in-memory — re-arm or the task sits
+          // in retryWait forever (_pump only picks up `ready`).
+          _scheduleRetry(t);
+          break;
+        case DownloadStatus.urlExpired:
+          // Parked mid-refresh when the process died — re-run the
+          // refresh path; with no resolver it fails honestly.
+          unawaited(_refreshAndResume(t));
           break;
         case DownloadStatus.downloading:
         case DownloadStatus.downloadingVideo:
@@ -122,6 +132,9 @@ final class DownloadScheduler {
   }
 
   Future<void> dispose() async {
+    // Land pending writes before the streams/timers go away — a
+    // debounce window must not cost the final progress record.
+    await flush();
     _disposed = true;
     for (final s in _subs.values) {
       await s.cancel();
@@ -232,7 +245,10 @@ final class DownloadScheduler {
   }
 
   Future<void> remove(TaskId id) async {
-    await cancel(id);
+    // Terminal records restored from the repo aren't in _tasks —
+    // cancel() would throw 'unknown task' before the repo delete
+    // runs, leaving the record to resurface every restart.
+    if (_tasks.containsKey(id.value)) await cancel(id);
     _tasks.remove(id.value);
     await _repo.delete(id);
   }
@@ -343,7 +359,7 @@ final class DownloadScheduler {
       }
       _bus.publish(DownloadStarted(running.id, _clock().toUtc()));
     } catch (e) {
-      _fail(running, ErrorCode.engineUnavailable, '$e');
+      _dispatchFailed(running, e);
     }
   }
 
@@ -361,8 +377,20 @@ final class DownloadScheduler {
         } catch (_) {}
       }
     } catch (e) {
-      _fail(task, ErrorCode.engineUnavailable, '$e');
+      _dispatchFailed(task, e);
     }
+  }
+
+  /// Engine create/start threw — route through the retry path
+  /// (engineUnavailable is retryable) instead of an instant
+  /// terminal failure. The terminal guard also covers a cancel
+  /// that landed mid-dispatch, where _fail would throw an
+  /// InvalidTransitionError on cancelled→failed.
+  void _dispatchFailed(DownloadTask task, Object e) {
+    final cur = _tasks[task.id.value];
+    if (cur == null || cur.status.isTerminal) return;
+    unawaited(_failed(
+        cur, EngineFailed(ErrorCode.engineUnavailable, detail: '$e')));
   }
 
   void _subscribe(TaskId id) {
@@ -498,20 +526,27 @@ final class DownloadScheduler {
     }
     final attempts = t.failedAttempts + 1;
     if (_isRetryable(e.error) && t.retryPolicy.canRetry(attempts)) {
-      _apply(t, DownloadStatus.retryWait,
+      final waiting = _apply(t, DownloadStatus.retryWait,
           failedAttempts: attempts, lastError: e.error);
       _bus.publish(DownloadRetryScheduled(t.id, _clock().toUtc(),
           attempt: attempts));
-      _retryTimers[t.id.value] =
-          Timer(t.retryPolicy.delayForAttempt(attempts), () {
-        final cur = _tasks[t.id.value];
-        if (cur == null || cur.status != DownloadStatus.retryWait) return;
-        final ready = _apply(cur, DownloadStatus.downloading);
-        unawaited(_reattachRunning(ready));
-      });
+      _scheduleRetry(waiting);
       return;
     }
     _fail(t, e.error, e.detail ?? '');
+  }
+
+  /// Arms the backoff timer for a retryWait task. In-memory only —
+  /// recover() must re-arm it for persisted retryWait records.
+  void _scheduleRetry(DownloadTask t) {
+    _retryTimers[t.id.value]?.cancel();
+    _retryTimers[t.id.value] =
+        Timer(t.retryPolicy.delayForAttempt(t.failedAttempts), () {
+      final cur = _tasks[t.id.value];
+      if (cur == null || cur.status != DownloadStatus.retryWait) return;
+      final ready = _apply(cur, DownloadStatus.downloading);
+      unawaited(_reattachRunning(ready));
+    });
   }
 
   /// Re-refresh an expired source URL, validate it is the same file,
@@ -555,7 +590,8 @@ final class DownloadScheduler {
     );
     _tasks[t.id.value] = t;
     _emit(t);
-    unawaited(_repo.upsert(t));
+    _lastWrite = _repo.upsert(t);
+    unawaited(_lastWrite);
     _bus.publish(DownloadUrlRefreshed(t.id, _clock().toUtc()));
     t = _apply(t, DownloadStatus.downloading);
     try {
@@ -615,8 +651,28 @@ final class DownloadScheduler {
     );
     _tasks[t.id.value] = updated;
     _emit(updated);
-    unawaited(_repo.upsert(updated));
+    _lastWrite = _repo.upsert(updated);
+    unawaited(_lastWrite);
     return updated;
+  }
+
+  /// Persist pending state before shutdown — debounced progress
+  /// writes plus the last in-flight transition. Repo writes chain
+  /// onto one queue, so awaiting the newest upsert drains every
+  /// earlier one; without this a `completed` landing in the final
+  /// debounce window is lost and the task resurrects on restart.
+  Future<void> flush() async {
+    for (final key in _persistDebounce.keys.toList()) {
+      _persistDebounce.remove(key)?.cancel();
+      final t = _tasks[key];
+      if (t != null) {
+        _lastWrite = _repo.upsert(t);
+        unawaited(_lastWrite);
+      }
+    }
+    try {
+      await _lastWrite;
+    } catch (_) {}
   }
 
   /// Progress events are high-frequency — write at most once per
@@ -627,7 +683,13 @@ final class DownloadScheduler {
       () => Timer(const Duration(milliseconds: 500), () {
         _persistDebounce.remove(id.value);
         final t = _tasks[id.value];
-        if (t != null) unawaited(_repo.upsert(t));
+        // Chain into _lastWrite so flush() drains this write too —
+        // a timer that already fired isn't reachable via the
+        // _persistDebounce map anymore.
+        if (t != null) {
+          _lastWrite = _repo.upsert(t);
+          unawaited(_lastWrite);
+        }
       }),
     );
   }

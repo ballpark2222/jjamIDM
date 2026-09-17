@@ -541,4 +541,63 @@ void main() {
     await waitFor(mc, t.id, DownloadStatus.failed);
     await mc.dispose();
   });
+
+  test('remove deletes a repo-only terminal record — a task '
+      'terminal before restart is never in _tasks', () async {
+    final now = DateTime.now().toUtc();
+    await repo.upsert(DownloadTask(
+        id: const TaskId('m-done'),
+        kind: TaskKind.media,
+        status: DownloadStatus.completed,
+        source: DownloadSource(initialUrl: 'https://x/w'),
+        output: OutputSpec(targetDirectory: dir.path),
+        createdAt: now,
+        updatedAt: now));
+    final mc = MediaDownloadCoordinator(
+      engine: FakeEngine(),
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(
+          const MediaPlan(finalFileName: 'v.mp4', steps: [])),
+      muxer: FakeMuxer(),
+    );
+    await mc.recover();
+    // list() still surfaces it (media.list snapshot), so the UI
+    // can render it — remove() must delete the record, not no-op.
+    expect((await mc.tasks()).map((t) => t.id.value),
+        contains('m-done'));
+    await mc.remove(const TaskId('m-done'));
+    expect(await repo.list(), isEmpty);
+    await mc.dispose();
+  });
+
+  test('tasks() reports records recovered to a terminal state — '
+      'the broadcast emission fired before UI attached', () async {
+    // Simulate a previous host's persisted task, then recover.
+    final now = DateTime.now().toUtc();
+    await repo.upsert(DownloadTask(
+        id: const TaskId('m-stale'),
+        kind: TaskKind.media,
+        status: DownloadStatus.downloadingVideo,
+        source: DownloadSource(initialUrl: 'https://x/w'),
+        output: OutputSpec(targetDirectory: dir.path),
+        createdAt: now,
+        updatedAt: now));
+    final mc = MediaDownloadCoordinator(
+      engine: FakeEngine(),
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(
+          const MediaPlan(finalFileName: 'v.mp4', steps: [])),
+      muxer: FakeMuxer(),
+    );
+    await mc.recover();
+
+    final list = await mc.tasks();
+    final t =
+        list.singleWhere((e) => e.id.value == 'm-stale');
+    expect(t.status, DownloadStatus.failed);
+    expect(t.kind, TaskKind.media);
+    await mc.dispose();
+  });
 }

@@ -36,3 +36,6 @@ downloads/
 
 # RC packaging output
 /release/
+
+# Dev native-host queue dir (default: <config dir>/queue)
+native-host/queue/

@@ -43,6 +43,10 @@ final class EngineProtocol {
   // in-flight work first. Without it a removed task's record
   // persisted in the media repo and resurfaced on recovery.
   static const String mediaRemove = 'media.remove';
+  // v2 additive (ADR-0006): durable media-task snapshot. media.event
+  // is a broadcast — tasks recovered/failed before a client attached
+  // were unreachable without a pull.
+  static const String mediaList = 'media.list';
 
   // server → client notifications
   static const String taskEvent = 'task.event';

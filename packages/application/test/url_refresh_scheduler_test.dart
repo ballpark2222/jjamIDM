@@ -207,6 +207,44 @@ void main() {
     await s.dispose();
   });
 
+  test('restart recovery: persisted urlExpired re-runs refresh',
+      () async {
+    // Hold the first refresh open so the urlExpired state persists
+    // durably, then "restart" with a working refresher.
+    final hang = Completer<RefreshedSource>();
+    final e1 = FakeEngine();
+    final s1 = sched(e1, _PendingRefresher(hang.future));
+    final t = await s1.enqueue(req());
+    await until(s1, t.id, (x) => x.status == DownloadStatus.downloading);
+
+    e1.emit(t.id, const EngineFailed(ErrorCode.urlExpired));
+    await until(
+        s1, t.id, (x) => x.status == DownloadStatus.urlExpired);
+    await repo.pending; // urlExpired record must be durable
+    await s1.dispose(); // the hung refresh dies with the "process"
+
+    final e2 = FakeEngine();
+    final r2 = FakeRefresher(const RefreshedSource(
+      url: 'http://x/f?token=NEW',
+      etag: '"stable"',
+      contentLength: 1000,
+    ));
+    final s2 = sched(e2, r2);
+    await s2.recover();
+
+    // urlExpired survives in listActive → recover re-runs refresh →
+    // replaceSource misses the fresh engine → reattach creates it.
+    final back = await until(s2, t.id,
+        (x) => x.status == DownloadStatus.downloading);
+    expect(back.source.currentUrl, 'http://x/f?token=NEW');
+    expect(r2.calls, 1);
+    for (var i = 0; i < 50 && !e2.isKnown(t.id); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(e2.isKnown(t.id), isTrue);
+    await s2.dispose();
+  });
+
   test('manual refreshSource drives urlExpired tasks', () async {
     final e = FakeEngine();
     var attempt = 0;
@@ -230,4 +268,13 @@ final class _FlipRefresher implements UrlRefreshResolver {
   final RefreshedSource Function() fn;
   @override
   Future<RefreshedSource> refresh(DownloadTask task) async => fn();
+}
+
+/// Refresher that never resolves until the given future completes —
+/// keeps a task parked in urlExpired for the recovery test.
+final class _PendingRefresher implements UrlRefreshResolver {
+  _PendingRefresher(this.future);
+  final Future<RefreshedSource> future;
+  @override
+  Future<RefreshedSource> refresh(DownloadTask task) => future;
 }

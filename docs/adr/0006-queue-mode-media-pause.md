@@ -98,6 +98,65 @@ Backward-compatible additions only; existing clients are unaffected:
     hardened alongside: `tasks.json.bak` fallback for the
     crash-mid-flush window, corrupt-store tolerance on open, and a
     write queue that survives a failed flush.
+11. **`media.list`** (v2 additive) — durable snapshot of every media
+    task the host tracks. `media.event` is broadcast-only: tasks
+    recovered to a terminal state by `recover()` fired before any
+    client could attach, so restored media tasks were invisible in
+    the desktop UI. `DesktopController.loadExisting()` now merges
+    `EngineHostClient.listMediaTasks()` into the task map; a v1 host
+    or a media-less v2 host yields an empty list. Companion fixes:
+    the engine-host binary constructs `EngineHostServer` (which
+    subscribes to `media.changes`) before `media.recover()` so the
+    recovery transitions are pushed too, and queue-mode
+    `task.subscribeEvents` on an id the scheduler doesn't track now
+    returns `taskNotFound` instead of registering a listener that
+    can never match — the native host drops the id from its replay
+    set on that error.
+12. **Repo-only terminal records are removable** — `remove()` on
+    both `DownloadScheduler` and `MediaDownloadCoordinator` used to
+    fail/no-op for records restored from the repo but absent from
+    memory (recover() only loads active states), so an old
+    completed/failed task could never be deleted. Both now delete
+    the repo record unconditionally.
+13. **Shutdown drains persistence** — `engine.shutdown` previously
+    exited while debounced/queued repo writes were still in flight,
+    so a final `completed` could resurrect as `failed` on the next
+    launch. Scheduler and coordinator track the last write
+    (`_lastWrite`); the server's shutdown path flushes both with a
+    bounded timeout, and `EngineHostClient.shutdown()` waits for
+    the child's `exitCode` before falling back to `kill()`. The
+    engine-host binary also exits on stdin EOF — a dead control
+    plane used to leave an orphaned host writing shared segment
+    temp files while the next launch's recovery re-dispatched the
+    same tasks (double-writer window). The server additionally
+    flushes stdout before `exit(0)` so the ack isn't dropped from
+    the sink buffer.
+14. **Recovery covers parked retry/expiry states** — `retryWait`
+    and `urlExpired` are non-terminal but were invisible to
+    recovery: the retry backoff timer is in-memory, and
+    `urlExpired` wasn't in `listActive` at all. A crash in either
+    state stranded the task forever (never retried, never
+    refreshable — `refreshSource` only sees in-memory tasks).
+    `listActive` now includes `urlExpired`, `recover()` re-arms the
+    retry timer via `_scheduleRetry`, and urlExpired records re-run
+    `_refreshAndResume` (failing honestly when no resolver exists).
+15. **Dispatch failures retry; cancel-during-failing-start is safe** —
+    an `engine.create`/`start` exception used to `_fail` instantly,
+    skipping the retry policy that already treats
+    `engineUnavailable` as retryable, and a cancel landing before
+    the throw made `_fail` raise `InvalidTransitionError` on
+    cancelled→failed. Both dispatch paths now route through
+    `_failed` behind a terminal-state guard: transient spawn
+    failures back off and retry; a cancelled task stays cancelled.
+16. **App-exit durability** — the desktop never flushed on quit:
+    `scheduler.dispose()` cancelled debounce timers and the engine
+    host died on stdin EOF mid-write. `dispose()` now flushes
+    first, `DesktopController.shutdown()` drains the scheduler and
+    calls `EngineHostClient.shutdown()`, and the app answers
+    `onExitRequested` only after both complete. Debounced progress
+    writes and the `_refreshAndResume` upsert are chained into
+    `_lastWrite` so `flush()` can't return while they are in
+    flight.
 
 ## Consequences
 
@@ -109,3 +168,8 @@ Backward-compatible additions only; existing clients are unaffected:
   honest limitation, documented for the UI.
 - Pause/cancel is safe at any point in a task's life — including
   the resolving/parked window — without engine-side crashes.
+- The browser-spawned engine uses its own `--data-dir`
+  (`<dataDir>\browser`) — sharing `media-tasks` with the desktop's
+  engine put two process-local repository writers on one file.
+- Extension task mirroring into `chrome.storage.local` is debounced
+  (400 ms) — per-event writes could exhaust the write-ops quota.

@@ -160,13 +160,29 @@ Future<void> main(List<String> args) async {
     );
     await scheduler.recover();
   }
+  // Construct the server BEFORE media recovery: its constructor
+  // subscribes to media.changes (a broadcast — emissions with no
+  // listener are dropped), so recovered/failed task transitions
+  // only reach the client when the subscription already exists.
+  final server = EngineHostServer(
+      engine: engine, tempRoot: tempRoot,
+      media: media, scheduler: scheduler);
   // Mark interrupted media tasks regardless of queue mode — in-memory
   // run state is gone after any restart.
   await media?.recover();
 
-  final server = EngineHostServer(
-      engine: engine, tempRoot: tempRoot,
-      media: media, scheduler: scheduler);
   await server.run(
       stdin.transform(utf8.decoder).transform(const LineSplitter()));
+  // stdin EOF = the control plane is gone. Land queued persistence
+  // first (bounded — a wedged FS must not hang the exit), or a
+  // transition in the final debounce window resurrects next launch.
+  try {
+    await scheduler?.flush().timeout(const Duration(seconds: 5));
+    await media?.flush().timeout(const Duration(seconds: 5));
+  } catch (_) {}
+  // Without an explicit exit the event loop stays alive on open
+  // engine sockets/isolates — an orphaned host keeps writing shared
+  // segment temp files while the next launch's recovery
+  // re-dispatches the same tasks.
+  exit(0);
 }
