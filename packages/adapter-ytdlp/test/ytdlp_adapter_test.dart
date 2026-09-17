@@ -85,14 +85,14 @@ void main() {
     final out = '${tmp.path}\\out.bin';
     final pcts = <double>[];
     final code = await dl.download(
-      url: 'http://fixture/v',
+      pageUrl: 'http://fixture/v',
       outputPath: out,
-      format: 'v720+a128',
-      onPercent: pcts.add,
+      formatId: 'v720+a128',
+      onProgress: pcts.add,
     );
     expect(code, 0);
     expect(pcts.first, 0);
-    expect(pcts.last, 100);
+    expect(pcts.last, 1.0);
     expect(File(out).lengthSync(), 1024);
   });
 
@@ -103,7 +103,7 @@ void main() {
       environment: {'FAKE_YTDLP_ARGV_LOG': argvLog.path},
     );
     await dl.download(
-      url: 'http://fixture/v',
+      pageUrl: 'http://fixture/v',
       outputPath: '${tmp.path}\\h.bin',
       headers: const {'Cookie': 'a=b; c=d', 'Authorization': 'Bearer x'},
     );

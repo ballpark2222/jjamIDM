@@ -19,6 +19,23 @@ abstract interface class MediaResolver {
   Future<String> version();
 }
 
+/// Port: a component that downloads media itself (HLS/DASH segments,
+/// yt-dlp-managed fetches) where plain Range requests can't work.
+/// Implemented by adapter-ytdlp; keyed by componentId in the plan.
+abstract interface class ComponentDownloader {
+  String get componentId; // e.g. 'tool.ytdlp' / 'media.ytdlp'
+
+  /// Download [pageUrl] (or the step's format) to [outputPath].
+  /// [onProgress] receives 0.0..1.0; returns the process exit code.
+  Future<int> download({
+    required String pageUrl,
+    required String outputPath,
+    String? formatId,
+    Map<String, String> headers,
+    void Function(double progress)? onProgress,
+  });
+}
+
 /// Port: remux/mux/subtitle processing. Implemented by
 /// adapter-ffmpeg — the only place FFmpeg argv is built.
 abstract interface class MediaMuxer {

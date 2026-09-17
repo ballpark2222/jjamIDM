@@ -13,6 +13,8 @@ dependencies:
     path: ../download-api
   freedm_event_bus:
     path: ../event-bus
+  freedm_media_api:
+    path: ../media-api
 dev_dependencies:
   test: ^1.26.0
   lints: ^6.0.0

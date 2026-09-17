@@ -54,6 +54,7 @@ final class TaskStateMachine {
       DownloadStatus.pausing,
       DownloadStatus.downloadingAudio,
       DownloadStatus.muxing,
+      DownloadStatus.verifying, // single-stream: no mux needed
       DownloadStatus.retryWait,
       DownloadStatus.urlExpired,
       DownloadStatus.failed,
@@ -62,6 +63,7 @@ final class TaskStateMachine {
     DownloadStatus.downloadingAudio: {
       DownloadStatus.pausing,
       DownloadStatus.muxing,
+      DownloadStatus.verifying,
       DownloadStatus.retryWait,
       DownloadStatus.urlExpired,
       DownloadStatus.failed,
