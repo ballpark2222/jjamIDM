@@ -42,14 +42,24 @@
   tools/upstream-watch + tools/component-build — 9 tests pass;
   live run verified against GitHub (docs/upstream-report.json).
 
+- M14 desktop UI: Flutter 3.47.4 app (task list, progress, pause/
+  resume/cancel, URL-refresh action, component tab with update/pin/
+  rollback), DesktopController view-model, EngineHostClient
+  (DownloadEngine over spawned engine-host NDJSON-RPC) +
+  task.probe protocol method — widget test + client E2E pass.
+  Windows binary needs Visual Studio C++ workload (not installed).
+- M15 RC packaging: tools/release/package.ps1 produces
+  release/freedm-rc/ (engine-host.exe AOT, native_host.exe release,
+  extension, SHA256SUMS.json); docs/AUDIT_HANDOFF.md with provenance
+  table, clean-machine verification procedure, and limitations.
+
 ## In Progress
 
 - (none)
 
 ## Not Started
 
-- M14 desktop UI (Flutter — SDK not installed)
-- M15 RC packaging + audit handoff
+- (none — all M0–M15 milestones implemented)
 
 ## Blockers
 
@@ -63,8 +73,10 @@
   same-file conflict, refresh failure, manual refreshSource)
 - contract: adapter-brisk 8, adapter-ytdlp 6, adapter-ffmpeg 4
 - integration: fixture server 12
-- e2e: native host → engine host → brisk → disk (M5)
-- total: 71 dart tests green
+- e2e: native host → engine host → brisk → disk (M5);
+  EngineHostClient ↔ engine-host ↔ brisk → sha256 disk (3)
+- desktop: flutter widget + helper tests 2
+- total: 76 dart tests + 2 flutter tests green
 
 ## Known Limitations (for audit notes)
 
@@ -86,4 +98,5 @@
 - OS: Windows (user machine). git 2.39, node 24, python 3.10 present.
 - Dart SDK 3.13.4 vendored at `../.tools/dart-sdk` (outside repo, not committed).
 - Rust 1.98.1 (gnu toolchain) installed — native-host builds.
-- Flutter SDK: NOT installed — required only at M14 (desktop GUI).
+- Flutter 3.47.4 vendored at `../.tools/flutter` (outside repo).
+  Windows build needs Visual Studio "Desktop development with C++".
