@@ -61,6 +61,24 @@ Backward-compatible additions only; existing clients are unaffected:
    stale loop when resume/cancel supersedes it. The same
    retry-until-stopped applies to a cancel that raced `start()`.
 
+   Follow-up hardening (same upstream quirks, three more cases):
+
+   - **Stale paused reports**: `paused` in a progress message is a
+     per-connection flag, so stragglers can be delivered after a
+     resume (queued behind the start command) or satisfy a *new*
+     pause's ack before it ever sends. The adapter gates paused
+     handling on `expectPaused` and un-acks when running progress
+     contradicts a paused report; the retry loop waits one settle
+     beat before trusting an ack.
+   - **Cancel in the pre-channel window**: `sendToDownloadIsolates`
+     rewrites *any* command — `cancel` included — to `startInitial`
+     while `connectionChannels` is empty. `cancel()` therefore
+     re-sends until the engine's `Canceled` status removes the task.
+   - **create() re-attach**: scheduler resume/restart recovery
+     re-creates the adapter task; the event stream is carried over
+     so existing subscribers (queue-mode `task.event` forwarding)
+     aren't orphaned.
+
 ## Consequences
 
 - Browser-triggered downloads now get concurrency limits (default

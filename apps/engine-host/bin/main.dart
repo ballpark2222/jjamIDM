@@ -34,7 +34,7 @@ Future<void> main(List<String> args) async {
       Directory('${Directory.systemTemp.path}${sep}freedm-engine');
   String? ytdlp = Platform.environment['FREEDM_YTDLP'];
   String? ffmpeg = Platform.environment['FREEDM_FFMPEG'];
-  String? queueFile;
+  String? queueDir;
   var maxConcurrent = 3;
   for (var i = 0; i + 1 < args.length; i++) {
     switch (args[i]) {
@@ -47,7 +47,7 @@ Future<void> main(List<String> args) async {
       case '--ffmpeg':
         ffmpeg = args[i + 1];
       case '--queue':
-        queueFile = args[i + 1];
+        queueDir = args[i + 1];
       case '--max-concurrent':
         maxConcurrent = int.tryParse(args[i + 1]) ?? 3;
     }
@@ -145,9 +145,9 @@ Future<void> main(List<String> args) async {
   }
 
   DownloadScheduler? scheduler;
-  if (queueFile != null) {
+  if (queueDir != null) {
     final repo =
-        await JsonTaskRepository.open(Directory(queueFile));
+        await JsonTaskRepository.open(Directory(queueDir));
     var seq = 0;
     final stamp = DateTime.now().millisecondsSinceEpoch;
     scheduler = DownloadScheduler(

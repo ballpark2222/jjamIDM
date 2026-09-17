@@ -255,4 +255,69 @@ void main() {
     expect(e, isA<EngineFailed>());
     expect((e as EngineFailed).error, ErrorCode.cancelledByUser);
   });
+
+  test('stale paused reports cannot re-park a resumed task',
+      timeout: const Timeout(Duration(minutes: 3)), () async {
+    // Paused reports are per-connection: with several connections a
+    // straggler can be delivered after resume() — it must not surface
+    // as EnginePaused (that re-parked the task at the scheduler while
+    // the engine kept running).
+    final engine = newEngine();
+    const id = TaskId('dl-stale-pause');
+    await engine.create(
+        id, req('/file-slow?length=4194304&delay=40', conns: 8));
+    final done = Completer<EngineEvent>();
+    var pauseSent = false;
+    var resumed = false;
+    var stalePaused = false;
+    engine.events(id).listen((e) async {
+      if (e is EngineProgress &&
+          e.receivedBytes > 64 * 1024 &&
+          !pauseSent) {
+        pauseSent = true;
+        await engine.pause(id);
+      }
+      if (e is EnginePaused) {
+        if (resumed) {
+          stalePaused = true; // paused event after resume = stale
+        } else {
+          resumed = true;
+          await engine.resume(id);
+        }
+      }
+      if (e is EngineCompleted || e is EngineFailed) done.complete(e);
+    });
+    await engine.start(id);
+    final e = await done.future.timeout(const Duration(minutes: 3));
+    expect(stalePaused, isFalse,
+        reason: 'paused event surfaced after resume');
+    expect(e, isA<EngineCompleted>(),
+        reason: (e is EngineFailed) ? '${e.detail}' : '');
+  });
+
+  test('cancel issued before connections register still stops the task',
+      timeout: const Timeout(Duration(minutes: 3)), () async {
+    // Upstream rewrites a pre-channel cancel into a start — the
+    // adapter must re-send until the engine reports the task gone,
+    // or the "cancelled" download continues as a zombie.
+    final engine = newEngine();
+    const id = TaskId('dl-fast-cancel');
+    await engine.create(
+        id, req('/file-slow?length=8388608&delay=40', conns: 8));
+    final done = Completer<EngineEvent>();
+    engine.events(id).listen((e) {
+      if (e is EngineCompleted || e is EngineFailed) done.complete(e);
+    });
+    await engine.start(id);
+    await engine.cancel(id); // lands in the pre-channel window
+    final e = await done.future.timeout(const Duration(minutes: 2));
+    expect(e, isA<EngineFailed>(),
+        reason: 'cancel was dropped — download kept running');
+    expect((e as EngineFailed).error, ErrorCode.cancelledByUser);
+    expect(
+        File('${outDir.path}${Platform.pathSeparator}file-slow')
+            .existsSync(),
+        isFalse,
+        reason: 'cancelled task produced a completed output file');
+  });
 }

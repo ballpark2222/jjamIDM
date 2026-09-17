@@ -8,7 +8,9 @@ import 'package:path/path.dart' as p;
 
 /// Per-task bookkeeping for the vendored Brisk engine.
 final class _BriskTask {
-  _BriskTask(this.item, this.settings, this.finalPath, this.tempDir);
+  _BriskTask(this.item, this.settings, this.finalPath, this.tempDir,
+      {StreamController<EngineEvent>? events})
+      : events = events ?? StreamController<EngineEvent>.broadcast();
 
   final brisk.DownloadItemModel item;
   final brisk.DownloadSettings settings;
@@ -19,7 +21,10 @@ final class _BriskTask {
 
   /// Per-task segment/temp dir — deleted when the task is cancelled.
   final Directory tempDir;
-  final events = StreamController<EngineEvent>.broadcast();
+
+  /// Reused across create() re-attach (scheduler resume re-creates
+  /// the task while subscribers stay attached to the same stream).
+  final StreamController<EngineEvent> events;
   EngineProgress? lastProgress;
 
   /// Set once the engine isolate accepted the start command — the
@@ -36,6 +41,13 @@ final class _BriskTask {
   /// connection channels exist, so [BriskEngineAdapter._pauseUntilAcked]
   /// re-sends until this flag flips.
   var pauseAcked = false;
+
+  /// A pause request is outstanding — set by pause()/the pre-start
+  /// wantPause path, cleared by resume()/cancel(). Paused reports are
+  /// per-connection: a straggler queued behind a resume can arrive
+  /// after it, and must not emit EnginePaused (it would re-park a
+  /// running task) or satisfy a newer pause's ack.
+  var expectPaused = false;
 
   /// Bumped on every pause/resume/cancel — a [_pauseUntilAcked] loop
   /// still running from an older pause must stop re-sending, or it
@@ -275,7 +287,14 @@ final class BriskEngineAdapter implements DownloadEngine {
       connectionRetryTimeoutMillis: _retryTimeout,
       maxConnectionRetryCount: _maxRetries,
     );
-    final task = _BriskTask(item, settings, filePath, taskTemp);
+    // Re-attach (scheduler resume / restart recovery) replaces the
+    // task record but must keep the live event stream — subscribers
+    // attached to the old controller would otherwise go silent.
+    final prev = _tasks[uid];
+    final task = _BriskTask(item, settings, filePath, taskTemp,
+        events: prev != null && !prev.events.isClosed
+            ? prev.events
+            : null);
     _tasks[uid] = task;
     // A pause issued while create() was in flight lands here —
     // applied on start() like a pre-start pause.
@@ -320,6 +339,7 @@ final class BriskEngineAdapter implements DownloadEngine {
     t.pauseAcked = false;
     if (t.wantPause) {
       t.wantPause = false;
+      t.expectPaused = true;
       await _pauseUntilAcked(id, ++t.pauseEpoch);
     }
   }
@@ -335,7 +355,18 @@ final class BriskEngineAdapter implements DownloadEngine {
   Future<void> _pauseUntilAcked(TaskId id, int epoch) async {
     for (var i = 0; i < 60; i++) {
       final t = _tasks[id.value];
-      if (t == null || t.pauseAcked || t.pauseEpoch != epoch) return;
+      if (t == null || t.pauseEpoch != epoch) return;
+      if (t.pauseAcked) {
+        // Settle beat before trusting the ack: paused reports are
+        // per-connection, so a straggler from a previous cycle can
+        // satisfy it while other connections still report running
+        // progress (which un-acks in _onProgress). Give stragglers
+        // one interval to contradict it; silence means the pause
+        // is real.
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        if (_tasks[id.value]?.pauseAcked ?? false) return;
+        continue;
+      }
       if (t.lastProgress != null || i > 3) {
         try {
           brisk.DownloadEngine.pause(id.value);
@@ -361,6 +392,7 @@ final class BriskEngineAdapter implements DownloadEngine {
     // A stale ack from a previous pause cycle must not satisfy this
     // new request — clear it before the retry loop starts.
     t.pauseAcked = false;
+    t.expectPaused = true;
     await _pauseUntilAcked(id, ++t.pauseEpoch);
   }
 
@@ -373,6 +405,7 @@ final class BriskEngineAdapter implements DownloadEngine {
       return;
     }
     t.pauseAcked = false;
+    t.expectPaused = false;
     t.pauseEpoch++;
     if (!t.started) {
       t.wantPause = false;
@@ -385,7 +418,10 @@ final class BriskEngineAdapter implements DownloadEngine {
   Future<void> cancel(TaskId id) async {
     final t = _tasks[id.value];
     _preCreatePauses.remove(id.value);
-    if (t != null) t.pauseEpoch++;
+    if (t != null) {
+      t.pauseEpoch++;
+      t.expectPaused = false;
+    }
     if (t == null) return;
     if (!t.started) {
       // Never reached the engine — synthesize the terminal event
@@ -403,7 +439,26 @@ final class BriskEngineAdapter implements DownloadEngine {
     }
     // Don't tear down the task here — the engine reports "Canceled"
     // as a progress status, and _onProgress closes the stream then.
-    brisk.DownloadEngine.cancel(id.value);
+    unawaited(_cancelUntilGone(id, t));
+  }
+
+  /// Re-sends cancel until the engine reports the task gone (bounded).
+  /// Upstream rewrites a cancel that lands before connection channels
+  /// exist into a start command — the same quirk [_pauseUntilAcked]
+  /// covers for pause — so a single send can silently restart the
+  /// download it meant to kill. The canceled status removes the
+  /// [_tasks] entry, which ends the loop; the identity check stops it
+  /// from cancelling a task re-created under the same id.
+  Future<void> _cancelUntilGone(TaskId id, _BriskTask task) async {
+    for (var i = 0; i < 40; i++) {
+      if (!identical(_tasks[id.value], task)) return;
+      try {
+        brisk.DownloadEngine.cancel(id.value);
+      } catch (_) {
+        return; // engine forgot the uid — nothing left to cancel
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    }
   }
 
   /// Engine checkpoints implicitly: segment progress lives in the
@@ -491,7 +546,8 @@ final class BriskEngineAdapter implements DownloadEngine {
       _tasks.remove(uid);
       return;
     }
-    if (msg.paused || status == brisk.DownloadStatus.paused) {
+    if ((msg.paused || status == brisk.DownloadStatus.paused) &&
+        t.expectPaused) {
       t.pauseAcked = true;
       t.events.add(const EnginePaused());
       return;
@@ -535,6 +591,10 @@ final class BriskEngineAdapter implements DownloadEngine {
       speedBytesPerSecond: msg.bytesTransferRate.round(),
       activeConnections: msg.connectionProgresses.length,
     );
+    // Running progress contradicts a paused report — the ack was a
+    // per-connection straggler and the pause hasn't actually landed;
+    // clearing it lets the retry loop keep sending.
+    if (t.expectPaused) t.pauseAcked = false;
     t.lastProgress = ev;
     t.events.add(ev);
   }
