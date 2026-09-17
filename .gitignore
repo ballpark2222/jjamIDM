@@ -33,3 +33,6 @@ coverage/
 # Local data dirs
 data/
 downloads/
+
+# RC packaging output
+release/

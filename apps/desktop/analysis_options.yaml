@@ -1,4 +1,5 @@
 analyzer:
   exclude:
     - build/**
+    - windows/**
 include: package:lints/recommended.yaml
