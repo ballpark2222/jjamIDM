@@ -191,6 +191,24 @@
 - Host: `start` command, validated `subdir` under downloadDir,
   `start:false`, `maxConnections`, `priority`; pause/resume/cancel
   fall back to media.* for coordinator-owned tasks.
+- Hardening (post-round debug sweep):
+  - `DownloadEngine.isKnown` port — queue-mode event subscription
+    polls it before attaching (engine.create may lag `downloading`);
+    media engine-step resume uses it to prefer `resume` over
+    re-`create` (a fresh create would re-probe an expired URL and
+    reset engine-side item state).
+  - Brisk patch 0005: `start` returns `Future` so callers can await
+    isolate registration; adapter `started`/`wantPause` flags make
+    pause/resume/cancel safe before start instead of crashing on
+    the engine's null internal maps.
+  - Dialog window X-close hands the download back to the browser
+    and clears the pending request (no lost downloads, no leak).
+  - Selected-links batch enqueues directly — a per-link dialog
+    would open a window storm.
+  - Host subscribes to task events before `task.start` so a fast
+    completion can't be missed.
+  - `media.recover()` runs on every host start, not queue mode
+    only.
 - Deferred (analysis done, not built): speed limiter (needs a
   vendored Brisk token-bucket patch), clipboard watch (needs a
   native-side poller — MV3 can't poll the clipboard).

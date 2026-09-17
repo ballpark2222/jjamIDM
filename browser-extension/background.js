@@ -250,6 +250,19 @@ async function enabled() {
 // opened via chrome.windows.create (allowed in response to user
 // gestures — a programmatic action-popup is not).
 const pendingDialog = new Map(); // token -> request payload
+const dialogWins = new Map();    // windowId -> token
+
+function dialogClosed(winId) {
+  const token = dialogWins.get(winId);
+  if (!token) return;
+  dialogWins.delete(winId);
+  const req = pendingDialog.get(token);
+  pendingDialog.delete(token);
+  if (req?.url) {
+    boundedAdd(captureFailed, req.url, SET_CAP);
+    chrome.downloads.download({ url: req.url }).catch(() => {});
+  }
+}
 
 function openStartDialog(payload) {
   const token = `d${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -260,12 +273,23 @@ function openStartDialog(payload) {
     width: 540,
     height: 330,
     focused: true,
+  }).then((w) => {
+    if (!w || w.id == null) return;
+    dialogWins.set(w.id, token);
+    // The window may already be gone — closed in the gap before
+    // registration; run the same cleanup onRemoved would have.
+    chrome.windows.get(w.id).catch(() => dialogClosed(w.id));
   }).catch(() => {
     // Popup blocked (shouldn't happen for windows) → just enqueue.
     pendingDialog.delete(token);
     sendToFreeDM(payload).catch(() => {});
   });
 }
+
+// Closing the dialog window via X never reaches dialogCancel — treat
+// it the same: hand the download back to the browser and drop the
+// pending request so nothing is lost or leaked.
+chrome.windows.onRemoved.addListener(dialogClosed);
 
 // Entry point for every file download: applies settings, routes to
 // the dialog when askBeforeDownload is on, else sends directly.
@@ -398,10 +422,15 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
           return [...urls];
         },
       });
+      // Batch path: one dialog per link would open a window storm —
+      // selected links enqueue directly like "all links" does.
+      const s2 = await getSettings();
       for (const url of r.result || []) {
-        await requestDownload({
+        sendToFreeDM({
           url, pageUrl: info.pageUrl, referer: info.pageUrl,
-        });
+          maxConnections: s2.maxConnections,
+          subdir: subdirFor(url, null, s2),
+        }).catch((e) => console.warn('selected enqueue failed', url, e));
       }
     } else if (info.menuItemId === 'freedm-all' && tab) {
       const s = await getSettings();

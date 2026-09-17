@@ -109,6 +109,7 @@ final class TaskStateMachine {
     DownloadStatus.muxing: {
       DownloadStatus.subtitleProcessing,
       DownloadStatus.verifying,
+      DownloadStatus.pausing, // pause lands at the next step boundary
       DownloadStatus.failed,
       DownloadStatus.cancelled,
     },

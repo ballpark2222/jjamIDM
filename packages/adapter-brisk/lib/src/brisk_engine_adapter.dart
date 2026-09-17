@@ -21,6 +21,15 @@ final class _BriskTask {
   final Directory tempDir;
   final events = StreamController<EngineEvent>.broadcast();
   EngineProgress? lastProgress;
+
+  /// Set once the engine isolate accepted the start command — the
+  /// engine's per-task maps populate inside start(), so a pause,
+  /// resume or cancel arriving earlier would crash on a null entry.
+  var started = false;
+
+  /// A pause requested before [started] — applied right after the
+  /// engine task actually starts so the request isn't dropped.
+  var wantPause = false;
 }
 
 /// DownloadEngine implementation over the vendored Brisk engine.
@@ -263,24 +272,59 @@ final class BriskEngineAdapter implements DownloadEngine {
   Future<void> start(TaskId id) async {
     final t = _tasks[id.value];
     if (t == null) throw StateError('unknown task ${id.value}');
-    brisk.DownloadEngine.start(
+    await brisk.DownloadEngine.start(
       t.item,
       t.settings,
       onButtonAvailability: (_) {},
       onDownloadProgress: (msg) => _onProgress(id.value, msg),
     );
+    t.started = true;
+    if (t.wantPause) {
+      t.wantPause = false;
+      brisk.DownloadEngine.pause(id.value);
+    }
   }
 
   @override
-  Future<void> pause(TaskId id) async =>
-      brisk.DownloadEngine.pause(id.value);
+  Future<void> pause(TaskId id) async {
+    final t = _tasks[id.value];
+    if (t == null) throw StateError('unknown task ${id.value}');
+    if (!t.started) {
+      t.wantPause = true;
+      return;
+    }
+    brisk.DownloadEngine.pause(id.value);
+  }
 
   @override
-  Future<void> resume(TaskId id) async =>
-      brisk.DownloadEngine.resume(id.value);
+  Future<void> resume(TaskId id) async {
+    final t = _tasks[id.value];
+    if (t == null) throw StateError('unknown task ${id.value}');
+    if (!t.started) {
+      t.wantPause = false;
+      return;
+    }
+    brisk.DownloadEngine.resume(id.value);
+  }
 
   @override
   Future<void> cancel(TaskId id) async {
+    final t = _tasks[id.value];
+    if (t == null) return;
+    if (!t.started) {
+      // Never reached the engine — synthesize the terminal event
+      // and remove the artifacts the running path would have.
+      try {
+        File(t.item.filePath).deleteSync();
+      } catch (_) {}
+      try {
+        t.tempDir.deleteSync(recursive: true);
+      } catch (_) {}
+      t.events.add(const EngineFailed(ErrorCode.cancelledByUser));
+      unawaited(t.events.close());
+      _tasks.remove(id.value);
+      return;
+    }
     // Don't tear down the task here — the engine reports "Canceled"
     // as a progress status, and _onProgress closes the stream then.
     brisk.DownloadEngine.cancel(id.value);
@@ -321,6 +365,7 @@ final class BriskEngineAdapter implements DownloadEngine {
   /// Whether the engine currently tracks [id] — events() returns an
   /// empty stream before create() runs, so queue-mode subscribers
   /// poll this before attaching.
+  @override
   bool isKnown(TaskId id) => _tasks.containsKey(id.value);
 
   // ------------------------------------------------------------------

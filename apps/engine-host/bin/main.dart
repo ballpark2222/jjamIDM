@@ -15,15 +15,15 @@ import 'package:freedm_persistence/freedm_persistence.dart';
 /// Usage:
 ///   freedm-engine-host [--temp-root DIR] [--ytdlp PATH]
 ///                      [--ffmpeg PATH] [--data-dir DIR]
-///                      [--queue FILE] [--max-concurrent N]
+///                      [--queue DIR] [--max-concurrent N]
 ///
 /// Speaks DownloadEngine Protocol v2 on stdin/stdout (NDJSON-RPC).
 /// When media binaries are resolvable, media.probe/media.enqueue/
 /// media.cancel/media.pause/media.resume are served in-process.
 ///
-/// With --queue, task.* calls route through the application
-/// DownloadScheduler (concurrency, priority, retry, persistence in
-/// FILE) — used by the browser native host which has no control
+/// With --queue DIR, task.* calls route through the application
+/// DownloadScheduler (concurrency, priority, retry, task repo in
+/// DIR) — used by the browser native host which has no control
 /// plane of its own. The desktop app runs its own scheduler and
 /// spawns this host without --queue.
 Future<void> main(List<String> args) async {
@@ -53,23 +53,54 @@ Future<void> main(List<String> args) async {
     }
   }
 
+  /// `.tools` probe: flat `.tools/<name>` first, then one level of
+  /// vendor dirs (`<vendor>/<name>`, `<vendor>/bin/<name>`) and a
+  /// versioned inner dir (`<vendor>/<ver>/bin/<name>`).
+  String? findUnderTools(Directory toolsDir, String name) {
+    if (!toolsDir.existsSync()) return null;
+    final flat = File('${toolsDir.path}$sep$name');
+    if (flat.existsSync()) return flat.path;
+    for (final vendor in toolsDir.listSync()) {
+      if (vendor is! Directory) continue;
+      for (final cand in [
+        '${vendor.path}$sep$name',
+        '${vendor.path}${sep}bin$sep$name',
+      ]) {
+        if (File(cand).existsSync()) return cand;
+      }
+      for (final inner in vendor.listSync()) {
+        if (inner is Directory &&
+            File('${inner.path}${sep}bin$sep$name').existsSync()) {
+          return '${inner.path}${sep}bin$sep$name';
+        }
+      }
+    }
+    return null;
+  }
+
   // Component lookup: packaged builds ship tools next to the exe in
-  // components/; dev runs fall back to the workspace .tools dir.
+  // components/ (or one level up — the RC puts the browser engine in
+  // desktop/ and tools in <rc>/components); dev runs fall back to the
+  // workspace .tools dir, including nested vendor dists like
+  // .tools/ffmpeg-extract/<ver>/bin/ffmpeg.exe.
   String? findTool(String name) {
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     for (final cand in [
       '$exeDir${sep}components$sep$name',
       '$exeDir$sep$name',
+      '$exeDir$sep..${sep}components$sep$name',
     ]) {
       if (File(cand).existsSync()) return cand;
     }
     var d = Directory.current.absolute;
     for (var i = 0; i < 8; i++) {
-      final f = File('${d.parent.path}$sep.tools$sep$name');
-      if (f.existsSync()) return f.path;
-      final dev = File(
-          '${d.path}$sep..$sep.tools$sep$name');
-      if (dev.existsSync()) return dev.path;
+      for (final toolsDir in [
+        Directory('${d.parent.path}$sep.tools'),
+        Directory('${d.path}$sep..$sep.tools'),
+      ]) {
+        final hit = findUnderTools(toolsDir, name);
+        if (hit != null) return hit;
+      }
       d = d.parent;
     }
     return null;
@@ -128,8 +159,10 @@ Future<void> main(List<String> args) async {
       maxConcurrent: maxConcurrent,
     );
     await scheduler.recover();
-    await media?.recover();
   }
+  // Mark interrupted media tasks regardless of queue mode — in-memory
+  // run state is gone after any restart.
+  await media?.recover();
 
   final server = EngineHostServer(
       engine: engine, tempRoot: tempRoot,

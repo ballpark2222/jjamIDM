@@ -24,6 +24,10 @@ final class EngineHostClient implements DownloadEngine {
       <String, StreamController<EngineEvent>>{};
   EngineCapabilities? _caps;
 
+  /// Tasks this client believes the host still tracks — set on
+  /// [create], cleared on terminal events and [cancel].
+  final _known = <String>{};
+
   /// Spawn [argv] (e.g. `dart apps/engine-host/bin/main.dart`) and
   /// handshake the protocol version.
   static Future<EngineHostClient> spawn(List<String> argv,
@@ -89,6 +93,7 @@ final class EngineHostClient implements DownloadEngine {
             if (ev is EngineCompleted || ev is EngineFailed) {
               unawaited(c.close());
               _taskEvents.remove(taskId);
+              _known.remove(taskId);
             }
           }
         } else if (m.method == EngineProtocol.mediaEvent) {
@@ -153,6 +158,7 @@ final class EngineHostClient implements DownloadEngine {
       TaskId id, DownloadRequest request) async {
     final r = await _call(EngineProtocol.taskCreate,
         {'taskId': id.value, 'request': _requestJson(request)});
+    _known.add(id.value);
     return EngineTaskHandle(
         engineTaskId: '${r['engineTaskId'] ?? id.value}');
   }
@@ -167,8 +173,17 @@ final class EngineHostClient implements DownloadEngine {
   Future<void> resume(TaskId id) async =>
       _call(EngineProtocol.taskResume, {'taskId': id.value});
   @override
-  Future<void> cancel(TaskId id) async =>
-      _call(EngineProtocol.taskCancel, {'taskId': id.value});
+  Future<void> cancel(TaskId id) async {
+    await _call(EngineProtocol.taskCancel, {'taskId': id.value});
+    _known.remove(id.value);
+  }
+
+  /// Local view of whether the host still tracks [id] — tasks are
+  /// marked on [create] and cleared on terminal events/[cancel].
+  /// Queue-mode hosts may also park a task in `created` before any
+  /// engine create; [status] reports that case remotely.
+  @override
+  bool isKnown(TaskId id) => _known.contains(id.value);
   @override
   Future<void> checkpoint(TaskId id) async =>
       _call(EngineProtocol.taskCheckpoint, {'taskId': id.value});

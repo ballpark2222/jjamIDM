@@ -42,13 +42,10 @@ if (Get-Command flutter -ErrorAction SilentlyContinue) {
     }
     Copy-Item -Recurse "build/windows/x64/runner/Release" `
       "$root/$Out/desktop"
-    # The app expects the engine host + media tools next to the exe.
+    # The app expects the engine host next to the exe; media tools
+    # are bundled after step 4 stages them (see below).
     Copy-Item "$root/$Out/jjamidm-engine-host.exe" `
       "$root/$Out/desktop/" -ErrorAction SilentlyContinue
-    if (Test-Path "$root/$Out/components") {
-      Copy-Item -Recurse "$root/$Out/components" `
-        "$root/$Out/desktop/components"
-    }
   }
   Pop-Location
 } else {
@@ -68,6 +65,14 @@ if (Test-Path $FfmpegBin) {
   Copy-Item "$FfmpegBin/ffmpeg.exe","$FfmpegBin/ffprobe.exe" $ComponentOut -ErrorAction SilentlyContinue
 }
 
+# 4b. The browser-spawned engine runs from desktop\ — it resolves
+#     tools at <exeDir>\components, so the staged set must ship there
+#     too. This copy must run AFTER step 4: on a clean build
+#     $ComponentOut doesn't exist until now.
+if (Test-Path "$root/$Out/desktop/jjamidm-engine-host.exe") {
+  Copy-Item -Recurse -Force $ComponentOut "$root/$Out/desktop/components"
+}
+
 # 5. browser extension (loaded unpacked / developer mode)
 if (Test-Path "$root/$Out/browser-extension") {
   Remove-Item -Recurse -Force "$root/$Out/browser-extension"
@@ -77,8 +82,11 @@ Copy-Item "$root/native-host/manifest/ai.jjam.idm.json" `
   "$root/$Out/browser-extension/native-host-manifest.json" -ErrorAction SilentlyContinue
 
 # 6. integrity manifest — every shipped artifact hashed.
+#    (exclude the manifest itself — a stale copy from a previous
+#    packaging run would otherwise be hashed into itself)
 $manifest = @{}
-Get-ChildItem -Recurse -File "$root/$Out" | ForEach-Object {
+Get-ChildItem -Recurse -File "$root/$Out" |
+  Where-Object { $_.Name -ne 'SHA256SUMS.json' } | ForEach-Object {
   $rel = $_.FullName.Substring("$root/$Out".Length + 1)
   $manifest[$rel] = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
 }

@@ -9,6 +9,17 @@ function fmt(n) {
   return `${n.toFixed(1)} ${u[i]}`;
 }
 
+const LABELS = {
+  created: '대기열에 보류', resolving: '분석 중', ready: '대기 중',
+  downloading: '다운로드 중', progress: '다운로드 중',
+  pausing: '일시정지 중', paused: '일시정지', retryWait: '재시도 대기',
+  verifying: '검증 중', postProcessing: '후처리 중',
+  resolvingMedia: '미디어 분석 중', downloadingVideo: '영상 다운로드',
+  downloadingAudio: '오디오 다운로드', muxing: '합치는 중',
+  subtitleProcessing: '자막 처리',
+  completed: '완료', failed: '실패', cancelled: '취소됨',
+};
+
 async function sendBg(m) {
   return chrome.runtime.sendMessage(m);
 }
@@ -31,6 +42,7 @@ async function refresh() {
     div.className = 'task';
     const st = t.status || t.type || '?';
     const terminal = ['completed', 'failed', 'cancelled'].includes(st);
+    const stLabel = LABELS[st] || st;
     // Engine was restarted → task unknown → controls can't work.
     let dead = terminal;
     // media tasks live in the coordinator — task.status doesn't know
@@ -41,7 +53,7 @@ async function refresh() {
         if (r && r.known === false) dead = true;
       } catch { dead = true; }
     }
-    const label = dead && !terminal ? `${st} — 종료됨` : st;
+    const label = dead && !terminal ? `${stLabel} — 종료됨` : stLabel;
     const pct = t.totalBytes ? Math.round(100 * (t.receivedBytes || 0) / t.totalBytes) : 0;
     div.innerHTML = `
       <div class="id">${id.slice(0, 12)}… — ${label}</div>

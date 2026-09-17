@@ -58,6 +58,8 @@ final class FakeEngine implements DownloadEngine {
   @override
   Future<void> setSpeedLimit(TaskId id, int? b) async {}
   @override
+  @override
+  bool isKnown(TaskId id) => controllers.containsKey(id.value);
   Stream<EngineEvent> events(TaskId id) =>
       controllers[id.value]!.stream;
 }

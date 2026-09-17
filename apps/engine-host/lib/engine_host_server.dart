@@ -332,10 +332,7 @@ final class EngineHostServer {
         // engine.create — subscribing then yields an empty stream.
         // Retry on the next active emission (progress/transition)
         // once the engine actually knows the task.
-        final br = engine;
-        if (br is BriskEngineAdapter && !br.isKnown(TaskId(taskId))) {
-          return;
-        }
+        if (!engine.isKnown(TaskId(taskId))) return;
         engSub = engine.events(TaskId(taskId)).listen((e) {
           _send(RpcNotification(
             method: EngineProtocol.taskEvent,

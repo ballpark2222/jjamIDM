@@ -63,6 +63,12 @@ abstract interface class DownloadEngine {
 
   Future<void> setSpeedLimit(TaskId id, int? bytesPerSecond);
 
+  /// Whether the engine still tracks [id] in memory. Callers that
+  /// defer create (queue mode) poll this before subscribing to
+  /// [events]; media resume uses it to pick `resume` over a fresh
+  /// `create`+`start` round-trip.
+  bool isKnown(TaskId id);
+
   /// Live event stream for [id] — progress, resolution, completion,
   /// failure. Ends when the task reaches a terminal engine state.
   Stream<EngineEvent> events(TaskId id);

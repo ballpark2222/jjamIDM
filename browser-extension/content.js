@@ -97,7 +97,7 @@
       // media pipeline; a real http(s) src goes to file download.
       srcUrl: el.currentSrc || el.src || '',
       pageUrl: location.href,
-    });
+    }).catch(() => {});
     chip.style.display = 'none';
   }, true);
 

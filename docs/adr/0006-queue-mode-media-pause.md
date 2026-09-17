@@ -40,6 +40,17 @@ Backward-compatible additions only; existing clients are unaffected:
 5. **`ComponentDownloader` port** gains optional
    `CancellationToken cancel` — downloader returns
    `cancelledExitCode (-100)` keeping partial artifacts.
+6. **`DownloadEngine.isKnown`** — synchronous "does the engine still
+   track this id" query. Queue-mode event subscription polls it
+   before attaching (engine.create may not have run yet), and media
+   engine-step resume uses it to pick `resume` over a fresh
+   `create`+`start` (a re-create would re-probe a possibly-expired
+   URL and reset in-memory item state).
+7. **Brisk patch 0005** (`start` returns `Future`) + adapter
+   `started`/`wantPause` guards — pause/resume/cancel issued before
+   the engine isolate registers the task used to crash on null
+   internal maps; a pre-start pause is now queued and applied the
+   moment the task starts.
 
 ## Consequences
 
@@ -49,3 +60,5 @@ Backward-compatible additions only; existing clients are unaffected:
 - Held ("나중에 받기") tasks persist in `%APPDATA%\jjamIDM\queue`.
 - Pausing a media task mid-mux waits for the stage boundary —
   honest limitation, documented for the UI.
+- Pause/cancel is safe at any point in a task's life — including
+  the resolving/parked window — without engine-side crashes.

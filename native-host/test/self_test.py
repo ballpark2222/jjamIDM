@@ -13,8 +13,8 @@ import sys
 import os
 
 EXE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-    os.path.dirname(__file__), "..", "target", "x86_64-pc-windows-gnu",
-    "debug", "freedm_native_host.exe")
+    os.path.dirname(__file__), "..", "target", "release",
+    "jjamidm_native_host.exe")
 
 
 def frame(msg: dict) -> bytes:
@@ -71,8 +71,14 @@ check("no-origin run refuses", p.returncode == 2 and r.get("ok") is False,
       f"rc={p.returncode} r={r}")
 
 # --- self-test mode ----------------------------------------------------
+# Pin the config at a nonexistent path so a real installed config
+# (engineCommand, queueDir) can't leak in and spawn a real engine.
+isolated = dict(os.environ)
+isolated["JJAMIDM_NATIVE_HOST_CONFIG"] = os.path.join(
+    os.path.dirname(__file__), "no-such-config.json")
+isolated.pop("FREEDM_NATIVE_HOST_CONFIG", None)
 p = subprocess.Popen([EXE, "--self-test"], stdin=subprocess.PIPE,
-                     stdout=subprocess.PIPE)
+                     stdout=subprocess.PIPE, env=isolated)
 
 def send(m):
     p.stdin.write(frame(m))
@@ -105,6 +111,22 @@ check("missing source rejected", r.get("ok") is False, r)
 
 r = send(msg(8, "pause", {"taskId": "../../etc/passwd"}))
 check("bad taskId rejected", r.get("ok") is False, r)
+
+# `start` must reach the task-command arm — a parked ("download
+# later") task is admitted via task.start. With no engineCommand the
+# handler validates the id first, then fails on engine spawn — the
+# error must NOT be "command not allowed".
+r = send(msg(81, "start", {"taskId": "../bad"}))
+check("start reaches task-command arm",
+      r.get("ok") is False and "taskId" in r.get("error", ""), r)
+r = send(msg(82, "start", {"taskId": "abc123"}))
+check("start lazy-spawns engine (queue recovery)",
+      r.get("ok") is False and "engine" in r.get("error", "")
+      and "not allowed" not in r.get("error", ""), r)
+r = send(msg(83, "status", {"taskId": "abc123"}))
+check("status lazy-spawns engine",
+      r.get("ok") is False and "engine" in r.get("error", "")
+      and "not allowed" not in r.get("error", ""), r)
 
 # oversize frame → channel must die (host exits on the length header,
 # so even the body write can hit a closed pipe — that is the pass)

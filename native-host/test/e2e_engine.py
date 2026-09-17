@@ -128,7 +128,12 @@ try:
     check("output sha256 matches fixture", actual == expected)
 
     send(msg(3, "status", {"taskId": task_id}))
+    # Events stream asynchronously — drain taskEvent frames until the
+    # status RESPONSE (it carries our requestId) arrives.
+    deadline = time.time() + 30
     r = read_frame(host)
+    while r.get("requestId") != 3 and time.time() < deadline:
+        r = read_frame(host)
     check("status reports task", r.get("ok") is True, r)
 finally:
     host.kill(); srv.kill()

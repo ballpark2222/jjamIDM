@@ -35,7 +35,11 @@ class DownloadEngine {
     engineChannels[uid]!.sink.add(message);
   }
 
-  static void start(
+  // FreeDM patch 0005: return Future — callers must await isolate
+  // spawn + downloadItems/engineChannels registration; pausing,
+  // resuming or cancelling before that point crashes on null
+  // entries inside the engine.
+  static Future<void> start(
     DownloadItemModel downloadItem,
     DownloadSettings settings, {
     required Function(ButtonAvailabilityMessage) onButtonAvailability,

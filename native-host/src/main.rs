@@ -119,10 +119,16 @@ fn load_config() -> Config {
                 if let Some(n) = j.get("maxConcurrent").and_then(|v| v.as_u64()) {
                     cfg.max_concurrent = n.clamp(1, 16) as u32;
                 }
-                cfg.queue_dir = j
+                // Only an explicit non-empty string overrides the
+                // default <configDir>\queue — an absent key must not
+                // silently turn queue mode off (upgrade path).
+                if let Some(q) = j
                     .get("queueDir")
                     .and_then(|v| v.as_str())
-                    .map(str::to_string);
+                    .filter(|s| !s.is_empty())
+                {
+                    cfg.queue_dir = Some(q.to_string());
+                }
             }
         }
     }
@@ -467,6 +473,11 @@ fn handle(
                 params.insert("priority".into(), json!(pr));
             }
             e.call("task.create", params)?;
+            // Subscribe BEFORE start — a small file can finish in
+            // the gap and its terminal event would be lost.
+            let mut sub = Map::new();
+            sub.insert("taskId".into(), json!(task_id));
+            e.call("task.subscribeEvents", sub)?;
             // start:false parks the task in the scheduler queue —
             // a later `start` command admits it.
             let start = p.get("start").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -475,9 +486,6 @@ fn handle(
                 sp.insert("taskId".into(), json!(task_id));
                 e.call("task.start", sp)?;
             }
-            let mut sub = Map::new();
-            sub.insert("taskId".into(), json!(task_id));
-            e.call("task.subscribeEvents", sub)?;
             Ok(json!({"taskId": task_id}))
         }
         "media" => {
@@ -513,9 +521,15 @@ fn handle(
                 "taskId": r.get("taskId").cloned().unwrap_or(Value::Null),
             }))
         }
-        "pause" | "resume" | "cancel" => {
+        "start" | "pause" | "resume" | "cancel" => {
             let id = task_id_of(&msg.payload)?;
-            let e = engine.as_mut().ok_or("engine not running")?;
+            // Cold-launch on demand: queue-persisted tasks survive a
+            // host restart, so control commands must reach the engine
+            // even when this is the first message after boot.
+            if engine.is_none() {
+                *engine = Some(spawn_engine(cfg)?);
+            }
+            let e = engine.as_mut().unwrap();
             let method = format!("task.{}", msg.command);
             let mut p = Map::new();
             p.insert("taskId".into(), json!(id));
@@ -534,7 +548,10 @@ fn handle(
         }
         "status" => {
             let id = task_id_of(&msg.payload)?;
-            let e = engine.as_mut().ok_or("engine not running")?;
+            if engine.is_none() {
+                *engine = Some(spawn_engine(cfg)?);
+            }
+            let e = engine.as_mut().unwrap();
             let mut p = Map::new();
             p.insert("taskId".into(), json!(id));
             e.call("task.status", p)

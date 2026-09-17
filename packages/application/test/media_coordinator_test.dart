@@ -37,13 +37,21 @@ final class FakeEngine implements DownloadEngine {
   @override
   Future<EngineTaskHandle> create(
       TaskId id, DownloadRequest r) async {
-    controllers[id.value] = StreamController<EngineEvent>();
+    // Broadcast like the real adapter — a paused engine step
+    // re-subscribes on resume.
+    controllers[id.value] = StreamController<EngineEvent>.broadcast();
     return EngineTaskHandle(engineTaskId: id.value);
   }
   @override
   Future<void> start(TaskId id) async {
     started.add(id.value);
-    // Write the output file and complete immediately.
+    // Write the output file and complete immediately — the deliver
+    // stage copies produced.last, so the fake artifact must exist.
+    if (_lastOutput != null) {
+      final f = File(_lastOutput!);
+      await f.parent.create(recursive: true);
+      await f.writeAsBytes([1]);
+    }
     controllers[id.value]!.add(
         EngineCompleted(outputPath: _lastOutput));
   }
@@ -61,6 +69,8 @@ final class FakeEngine implements DownloadEngine {
   @override
   Future<void> setSpeedLimit(TaskId id, int? b) async {}
   @override
+  @override
+  bool isKnown(TaskId id) => controllers.containsKey(id.value);
   Stream<EngineEvent> events(TaskId id) => controllers[id.value]!.stream;
 }
 
@@ -125,6 +135,36 @@ final class FakeDownloader implements ComponentDownloader {
   }
 }
 
+/// Engine whose start never finishes on its own — pause emits
+/// EnginePaused (the real engine's pause acknowledgement) and
+/// resume completes the step. Guards the pause-in-place →
+/// engine.resume path: a re-create would re-probe the URL.
+final class PausableEngine extends FakeEngine {
+  final pausedIds = <String>[];
+  final resumed = <String>[];
+  final startedGate = Completer<void>();
+  @override
+  Future<void> start(TaskId id) async {
+    started.add(id.value);
+    if (!startedGate.isCompleted) startedGate.complete();
+  }
+  @override
+  Future<void> pause(TaskId id) async {
+    pausedIds.add(id.value);
+    controllers[id.value]!.add(const EnginePaused());
+  }
+  @override
+  Future<void> resume(TaskId id) async {
+    resumed.add(id.value);
+    // Write the artifact — delivery renames produced.last into the
+    // target dir, so a missing file fails the task.
+    final out = _lastOutput!;
+    await File(out).parent.create(recursive: true);
+    await File(out).writeAsBytes([1, 2, 3]);
+    controllers[id.value]!.add(EngineCompleted(outputPath: out));
+  }
+}
+
 /// First call blocks until its CancellationToken fires (mimicking
 /// yt-dlp killed mid-run); the second call "resumes" and completes.
 final class PausableDownloader implements ComponentDownloader {
@@ -149,6 +189,27 @@ final class PausableDownloader implements ComponentDownloader {
     }
     await File(outputPath).writeAsBytes([9]);
     return 0;
+  }
+}
+
+/// Mux that blocks until [release] — lets a test request a pause
+/// while the task sits in `muxing`, which has no direct `pausing`
+/// edge in the base table.
+final class BlockingMuxer extends FakeMuxer {
+  final started = Completer<void>();
+  final _release = Completer<void>();
+  void release() {
+    if (!_release.isCompleted) _release.complete();
+  }
+  @override
+  Future<MuxResult> mux(MuxStep step, {String? workDir}) async {
+    muxed.add(step);
+    if (!started.isCompleted) started.complete();
+    await _release.future;
+    final out =
+        '${workDir ?? '.'}${Platform.pathSeparator}${step.outputFileName}';
+    await File(out).writeAsBytes([1, 2, 3]);
+    return MuxResult(ok: true, outputPath: out);
   }
 }
 
@@ -287,6 +348,44 @@ void main() {
     await mc.dispose();
   });
 
+  test('engine step pause → resume calls engine.resume, not create',
+      () async {
+    final engine = PausableEngine();
+    final mc = MediaDownloadCoordinator(
+      engine: engine,
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'v.mp4',
+        steps: [
+          EngineDownloadStep(
+              url: 'http://x/v', outputFileName: 'v.mp4', role: 'video'),
+        ],
+      )),
+      muxer: FakeMuxer(),
+    );
+    engine._lastOutput = '${dir.path}/work/v.mp4';
+    final t = await mc.enqueueMedia(
+      const MediaSelection(pageUrl: 'https://x/watch'),
+      workDir: '${dir.path}/work',
+      targetDirectory: dir.path,
+    );
+    await engine.startedGate.future
+        .timeout(const Duration(seconds: 5));
+    await mc.pause(t.id);
+    final parked = await waitFor(mc, t.id, DownloadStatus.paused);
+    expect(parked.status, DownloadStatus.paused);
+
+    await mc.resume(t.id);
+    final done = await waitFor(mc, t.id, DownloadStatus.completed);
+    expect(done.status, DownloadStatus.completed);
+    // The paused engine task was resumed in place — a second
+    // create would have re-probed the URL and reset its item.
+    expect(engine.resumed, [t.id.value]);
+    expect(engine.started, [t.id.value]);
+    await mc.dispose();
+  });
+
   test('mux failure fails the task', () async {
     final engine = FakeEngine();
     final muxer = FakeMuxer()..fail = true;
@@ -312,6 +411,48 @@ void main() {
     );
     final done = await waitFor(mc, t.id, DownloadStatus.failed);
     expect(done.lastError, ErrorCode.unknown);
+    await mc.dispose();
+  });
+
+  test('pause during mux parks at the next step boundary, '
+      'resume continues', () async {
+    // A plan with a download step after mux: pausing mid-mux must
+    // wait out the stage and park BEFORE the next step runs —
+    // muxing→pausing is a legal edge (InvalidTransitionError would
+    // otherwise leave the task stuck non-terminal).
+    final engine = FakeEngine();
+    final muxer = BlockingMuxer();
+    final mc = MediaDownloadCoordinator(
+      engine: engine,
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'o.mkv',
+        steps: [
+          MuxStep(inputs: ['v.mp4'], outputFileName: 'o.mkv'),
+          EngineDownloadStep(
+              url: 'http://x/a', outputFileName: 'a.m4a',
+              role: 'audio'),
+        ],
+      )),
+      muxer: muxer,
+    );
+    engine._lastOutput = '${dir.path}/work/a.m4a';
+    final t = await mc.enqueueMedia(
+      const MediaSelection(pageUrl: 'https://x/m'),
+      workDir: '${dir.path}/work',
+      targetDirectory: dir.path,
+    );
+    await muxer.started.future.timeout(const Duration(seconds: 5));
+    await mc.pause(t.id); // mid-mux: must land at the boundary
+    muxer.release();
+    final parked = await waitFor(mc, t.id, DownloadStatus.paused);
+    expect(parked.status, DownloadStatus.paused);
+    // The boundary parked BEFORE the audio step ran.
+    expect(engine.started, isEmpty);
+    await mc.resume(t.id);
+    await waitFor(mc, t.id, DownloadStatus.completed);
+    expect(engine.started, [t.id.value]);
     await mc.dispose();
   });
 

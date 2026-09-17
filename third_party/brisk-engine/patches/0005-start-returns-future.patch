@@ -1,0 +1,18 @@
+diff --git a/lib/src/download_engine/download_engine.dart b/lib/src/download_engine/download_engine.dart
+index ORIG..PATCH 100644
+--- a/lib/src/download_engine/download_engine.dart
++++ b/lib/src/download_engine/download_engine.dart
+@@ -38,7 +38,11 @@
+-  static void start(
+-    DownloadItemModel downloadItem,
+-    DownloadSettings settings, {
++  // FreeDM patch 0005: return Future — callers must await isolate
++  // spawn + downloadItems/engineChannels registration; pausing,
++  // resuming or cancelling before that point crashes on null
++  // entries inside the engine.
++  static Future<void> start(
++    DownloadItemModel downloadItem,
++    DownloadSettings settings, {
+     required Function(ButtonAvailabilityMessage) onButtonAvailability,
+     required Function(DownloadProgressMessage) onDownloadProgress,
+   }) async {

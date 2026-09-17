@@ -91,6 +91,8 @@ final class FakeEngine implements DownloadEngine {
   }
 
   @override
+  @override
+  bool isKnown(TaskId id) => controllers.containsKey(id.value);
   Stream<EngineEvent> events(TaskId id) =>
       controllers[id.value]!.stream;
 

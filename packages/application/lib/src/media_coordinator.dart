@@ -26,6 +26,18 @@ final class _MediaRun {
   var pauseRequested = false;
   CancellationToken? stepCancel;
   var engineStepActive = false;
+
+  /// True only while the engine-side task is actually running —
+  /// pausing before start crashes the engine (its per-task maps
+  /// populate inside start), so pause() must gate on this, not on
+  /// engineStepActive.
+  var engineStarted = false;
+
+  /// Set when an engine step was paused in place — resume must
+  /// call `engine.resume`, not `create`+`start` (a fresh create
+  /// would re-probe a possibly-expired URL and lose the engine's
+  /// in-memory item state for that step).
+  var enginePaused = false;
 }
 
 /// Thrown by a step when its pause/cancel sentinel fires — _run
@@ -106,9 +118,13 @@ final class MediaDownloadCoordinator {
     final t = _tasks[id.value];
     if (t == null || t.status.isTerminal) return;
     final run = _runs[id.value];
-    if (t.status.isActive) {
-      await _engine.cancel(id);
-      run?.stepCancel?.cancel();
+    run?.stepCancel?.cancel();
+    // isActive misses `paused` — a paused engine step still holds
+    // the task id inside the engine, so consult it directly.
+    if (t.status.isActive || run?.enginePaused == true) {
+      try {
+        await _engine.cancel(id);
+      } catch (_) {}
     }
     _apply(t, DownloadStatus.cancelled);
     _runs.remove(id.value);
@@ -121,11 +137,17 @@ final class MediaDownloadCoordinator {
   Future<void> pause(TaskId id) async {
     final t = _tasks[id.value];
     final run = _runs[id.value];
-    if (t == null || run == null || t.status.isTerminal) return;
+    if (t == null || run == null) {
+      throw StateError('unknown task ${id.value}');
+    }
+    if (t.status.isTerminal) return;
     run.pauseRequested = true;
     if (t.status == DownloadStatus.downloadingVideo ||
         t.status == DownloadStatus.downloadingAudio) {
-      if (run.engineStepActive) await _engine.pause(id);
+      if (run.engineStarted) {
+        await _engine.pause(id);
+        run.enginePaused = true;
+      }
       run.stepCancel?.cancel();
     }
   }
@@ -176,7 +198,14 @@ final class MediaDownloadCoordinator {
       task = _apply(task, DownloadStatus.ready);
       await _runSteps(task, run);
     } on _MediaPaused {
-      _parkPaused(task);
+      try {
+        _parkPaused(task);
+      } on InvalidTransitionError {
+        final cur = _tasks[task.id.value] ?? task;
+        if (!cur.status.isTerminal) {
+          _fail(cur, ErrorCode.unknown, 'pause has no legal boundary');
+        }
+      }
     } catch (e) {
       final cur = _tasks[task.id.value] ?? task;
       if (!cur.status.isTerminal) {
@@ -265,7 +294,17 @@ final class MediaDownloadCoordinator {
           outputPath: delivered ??
               (run.produced.isEmpty ? null : run.produced.last)));
     } on _MediaPaused {
-      _parkPaused(task);
+      // A status with no legal path to `paused` (e.g. a stage with no
+      // remaining download boundary) must fail honestly — wedging the
+      // task in a non-terminal state is worse.
+      try {
+        _parkPaused(task);
+      } on InvalidTransitionError {
+        final cur = _tasks[task.id.value] ?? task;
+        if (!cur.status.isTerminal) {
+          _fail(cur, ErrorCode.unknown, 'pause has no legal boundary');
+        }
+      }
     } catch (e) {
       final cur = _tasks[task.id.value] ?? task;
       if (!cur.status.isTerminal) {
@@ -305,7 +344,12 @@ final class MediaDownloadCoordinator {
           targetDirectory: run.workDir, fileName: step.outputFileName),
       headers: step.headers,
     );
-    await _engine.create(task.id, req);
+    // enginePaused && isKnown → resume in place. enginePaused &&
+    // !isKnown means the engine lost the task (host restart) —
+    // fall back to create+start; on-disk segments still resume.
+    final resuming = run.enginePaused && _engine.isKnown(task.id);
+    run.enginePaused = false;
+    if (!resuming) await _engine.create(task.id, req);
     final done = Completer<String>();
     final sub = _engine.events(task.id).listen((e) {
       if (e is EngineCompleted && !done.isCompleted) {
@@ -321,11 +365,23 @@ final class MediaDownloadCoordinator {
       }
     });
     run.engineStepActive = true;
-    await _engine.start(task.id);
     try {
+      if (resuming) {
+        await _engine.resume(task.id);
+      } else {
+        await _engine.start(task.id);
+      }
+      run.engineStarted = true;
+      // A pause that landed during create/start couldn't reach the
+      // engine — apply it now so the request isn't dropped.
+      if (run.pauseRequested) {
+        run.enginePaused = true;
+        await _engine.pause(task.id);
+      }
       return await done.future;
     } finally {
       run.engineStepActive = false;
+      run.engineStarted = false;
       await sub.cancel();
     }
   }
