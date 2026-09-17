@@ -12,6 +12,7 @@ let port = null;
 let reqSeq = 0;
 const pending = new Map(); // requestId -> {resolve, reject}
 const tasks = new Map();   // taskId -> latest event snapshot
+const doneNotified = new Set(); // taskIds already notified terminal
 
 const notifPaths = new Map(); // notificationId -> outputPath
 
@@ -74,14 +75,20 @@ function ensurePort() {
       tasks.set(id, { ...prev, ...rec });
       // File events carry `type`; media task snapshots carry `status`.
       const st = rec.status || rec.type;
-      const prevSt = prev.status || prev.type;
-      if (st === 'completed' && prevSt !== 'completed') {
+      // A fresh attempt (resume/retry) clears the terminal flag so a
+      // later completion/failure notifies again — exactly once each.
+      if (st !== 'completed' && st !== 'failed') doneNotified.delete(id);
+      // Notify terminal states exactly once per task — engine retries
+      // can interleave progress events between failure emissions.
+      if (st === 'completed' && !doneNotified.has(id)) {
+        doneNotified.add(id);
         const name = rec.fileName ||
             (rec.output && rec.output.fileName) ||
             (rec.outputPath || '').split(/[\\/]/).pop() || id;
         notifyDone(name, rec.outputPath);
       }
-      if (st === 'failed' && prevSt !== 'failed') {
+      if (st === 'failed' && !doneNotified.has(id)) {
+        doneNotified.add(id);
         notify('FreeDM — 다운로드 실패',
             rec.error || rec.detail || rec.lastError || id);
       }
@@ -165,15 +172,21 @@ async function enabled() {
 }
 
 // ---- capture: browser decided it's a download → take over ----------
+// URLs whose capture failed and were handed back to the browser.
+// Without this, restarting the browser download re-fires onCreated
+// → re-capture → re-fail → infinite notification loop.
+const captureFailed = new Set();
 chrome.downloads.onCreated.addListener(async (item) => {
   try {
     if (!(await enabled())) return;
     if (!/^https?:/.test(item.url)) return;
     if (item.state !== 'in_progress') return;
+    const url = item.finalUrl || item.url;
+    if (captureFailed.has(url) || captureFailed.has(item.url)) return;
     await chrome.downloads.cancel(item.id);
     await chrome.downloads.erase({ id: item.id });
     const taskId = await sendToFreeDM({
-      url: item.finalUrl || item.url,
+      url,
       referer: item.referrer,
       filename: item.filename ? item.filename.split(/[\\/]/).pop() : undefined,
       pageUrl: item.referrer,
@@ -182,7 +195,10 @@ chrome.downloads.onCreated.addListener(async (item) => {
   } catch (e) {
     console.warn('capture failed, leaving browser download off', e);
     notify('FreeDM — 전송 실패 (브라우저 다운로드로 복구)', String(e));
-    // If capture failed after cancel, restart it in the browser.
+    // Hand it back to the browser once — and never recapture this
+    // URL, or we'd loop failing downloads forever.
+    captureFailed.add(item.url);
+    if (item.finalUrl) captureFailed.add(item.finalUrl);
     try { await chrome.downloads.download({ url: item.url }); } catch {}
   }
 });

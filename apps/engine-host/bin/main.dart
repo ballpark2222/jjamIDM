@@ -64,7 +64,13 @@ Future<void> main(List<String> args) async {
   ytdlp ??= findTool('yt-dlp.exe');
   ffmpeg ??= findTool('ffmpeg.exe');
 
-  final engine = BriskEngineAdapter(tempRoot: tempRoot);
+  final engine = BriskEngineAdapter(
+    tempRoot: tempRoot,
+    // Per-task engine logs land in <tempRoot>/<taskId>/ so a failed
+    // download leaves diagnosable evidence (default tempRoot is
+    // %TEMP%\freedm-engine).
+    engineLogging: true,
+  );
 
   MediaDownloadCoordinator? media;
   if (ytdlp != null && ffmpeg != null) {
