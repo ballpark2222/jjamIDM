@@ -88,6 +88,13 @@ async function sendToFreeDM({ url, referer, filename, pageUrl }) {
   return res.taskId;
 }
 
+// Media page (YouTube watch etc.) → host-side media pipeline.
+// The engine resolves formats with yt-dlp and muxes with FFmpeg.
+async function sendMediaToFreeDM(pageUrl) {
+  const res = await call('media', { pageUrl });
+  return res.taskId;
+}
+
 async function enabled() {
   const s = await chrome.storage.local.get({ enabled: true });
   return s.enabled;
@@ -141,8 +148,16 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         url: info.linkUrl, pageUrl: info.pageUrl, referer: info.pageUrl,
       });
     } else if (info.menuItemId === 'freedm-page') {
-      const url = info.srcUrl || info.pageUrl;
-      await sendToFreeDM({ url, pageUrl: info.pageUrl, referer: info.pageUrl });
+      // Direct media file URL → engine download; embedded/blob
+      // players (YouTube…) → media pipeline on the page URL.
+      const src = info.srcUrl || '';
+      if (/^https?:/.test(src)) {
+        await sendToFreeDM({
+          url: src, pageUrl: info.pageUrl, referer: info.pageUrl,
+        });
+      } else {
+        await sendMediaToFreeDM(info.pageUrl);
+      }
     } else if (info.menuItemId === 'freedm-selected' && tab) {
       const [r] = await chrome.scripting.executeScript({
         target: { tabId: tab.id },

@@ -26,6 +26,7 @@ const MAX_URL_LEN: usize = 8192;
 const ALLOWED_COMMANDS: &[&str] = &[
     "ping",
     "download",
+    "media",
     "pause",
     "resume",
     "cancel",
@@ -192,8 +193,9 @@ fn spawn_engine(cfg: &Config) -> Result<EngineClient, String> {
                             let t = line.trim();
                             if !t.is_empty() {
                                 if let Ok(v) = serde_json::from_str::<Value>(t) {
-                                    if v.get("method").and_then(|m| m.as_str())
-                                        == Some("task.event")
+                                    let mth = v.get("method").and_then(|m| m.as_str());
+                                    if mth == Some("task.event")
+                                        || mth == Some("media.event")
                                     {
                                         let _ = event_tx.send(v);
                                         buf.clear();
@@ -402,13 +404,52 @@ fn handle(
             e.call("task.subscribeEvents", sub)?;
             Ok(json!({"taskId": task_id}))
         }
+        "media" => {
+            // Media page → host-side media pipeline (yt-dlp + FFmpeg
+            // live inside engine-host; browser never picks paths).
+            let p = &msg.payload;
+            let url = p
+                .get("pageUrl")
+                .or_else(|| p.get("url"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            validate_url(url)?;
+            if engine.is_none() {
+                *engine = Some(spawn_engine(cfg)?);
+            }
+            let e = engine.as_mut().unwrap();
+            let mut params = Map::new();
+            params.insert("pageUrl".into(), json!(url));
+            params.insert(
+                "targetDirectory".into(),
+                json!(cfg.download_dir.clone().unwrap_or_else(|| {
+                    env::var("USERPROFILE")
+                        .map(|u| format!("{}\\Downloads", u))
+                        .unwrap_or_else(|_| ".".into())
+                })),
+            );
+            let r = e.call("media.enqueue", params)?;
+            Ok(json!({
+                "taskId": r.get("taskId").cloned().unwrap_or(Value::Null),
+            }))
+        }
         "pause" | "resume" | "cancel" => {
             let id = task_id_of(&msg.payload)?;
             let e = engine.as_mut().ok_or("engine not running")?;
             let method = format!("task.{}", msg.command);
             let mut p = Map::new();
             p.insert("taskId".into(), json!(id));
-            e.call(&method, p)?;
+            match e.call(&method, p.clone()) {
+                Ok(v) => Ok(v),
+                // media tasks live in the coordinator — task.* does
+                // not know them; fall back to media.cancel.
+                Err(err) if msg.command == "cancel" => {
+                    let mut mp = Map::new();
+                    mp.insert("taskId".into(), json!(id));
+                    e.call("media.cancel", mp).map_err(|_| err)
+                }
+                Err(err) => Err(err),
+            }?;
             Ok(json!({"ok": true}))
         }
         "status" => {
