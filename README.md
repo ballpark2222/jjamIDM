@@ -23,7 +23,6 @@ freedm-engine-host ── BriskAdapter ── pinned Brisk engine
       │
       ├─ yt-dlp.exe   (MediaResolver/Downloader provider)
       ├─ FFmpeg       (MediaMuxer provider)
-      └─ plugin-host  (out-of-process plugins, reserved)
 ```
 
 모든 외부 component는 `components/` 아래 versioned directory에 설치되고

@@ -68,6 +68,7 @@ final class MediaSelection {
     this.audioFormatId,
     this.subtitleLangs = const [],
     this.outputFileName,
+    this.headers = const {},
   });
 
   final String pageUrl;
@@ -75,6 +76,10 @@ final class MediaSelection {
   final String? audioFormatId;
   final List<String> subtitleLangs;
   final String? outputFileName;
+
+  /// Browser-context headers (Cookie/Referer/User-Agent) — forwarded
+  /// to the resolver and download steps so login-gated media works.
+  final Map<String, String> headers;
 }
 
 /// A step in a media download plan. Steps are data — the application

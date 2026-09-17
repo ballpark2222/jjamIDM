@@ -31,7 +31,6 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "resume",
     "cancel",
     "status",
-    "list",
     "reveal",
     "open",
 ];
@@ -292,6 +291,29 @@ impl EngineClient {
 // Command handlers
 // --------------------------------------------------------------------
 
+/// Headers pass-through (cookie/authorization come from the
+/// extension's capture context) — names/values must be printable
+/// header text: no CR/LF, no control chars, bounded length.
+fn validated_headers(p: &Map<String, Value>) -> Result<Map<String, Value>, String> {
+    let mut headers = Map::new();
+    if let Some(h) = p.get("headers").and_then(|v| v.as_object()) {
+        for (k, v) in h {
+            let val = v.as_str().unwrap_or("");
+            if k.len() > 128
+                || val.len() > 8192
+                || k.chars().any(|c| {
+                    c.is_control() || c == ':' || c.is_whitespace()
+                })
+                || val.chars().any(|c| c.is_control() && c != '\t')
+            {
+                return Err("invalid header name/value".into());
+            }
+            headers.insert(k.clone(), json!(val));
+        }
+    }
+    Ok(headers)
+}
+
 fn task_id_of(payload: &Map<String, Value>) -> Result<String, String> {
     let id = payload
         .get("taskId")
@@ -345,27 +367,7 @@ fn handle(
                     validate_url(u)?;
                 }
             }
-            // headers pass-through (cookie/authorization come from the
-            // extension's capture context) — names/values must be
-            // printable header text: no CR/LF, no control chars.
-            let mut headers = Map::new();
-            if let Some(h) = p.get("headers").and_then(|v| v.as_object()) {
-                for (k, v) in h {
-                    let val = v.as_str().unwrap_or("");
-                    if k.len() > 128
-                        || val.len() > 8192
-                        || k.chars().any(|c| {
-                            c.is_control() || c == ':' || c.is_whitespace()
-                        })
-                        || val.chars().any(|c| {
-                            c.is_control() && c != '\t'
-                        })
-                    {
-                        return Err("invalid header name/value".into());
-                    }
-                    headers.insert(k.clone(), json!(val));
-                }
-            }
+            let headers = validated_headers(p)?;
             if engine.is_none() {
                 *engine = Some(spawn_engine(cfg)?);
             }
@@ -420,12 +422,16 @@ fn handle(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             validate_url(url)?;
+            let headers = validated_headers(&msg.payload)?;
             if engine.is_none() {
                 *engine = Some(spawn_engine(cfg)?);
             }
             let e = engine.as_mut().unwrap();
             let mut params = Map::new();
             params.insert("pageUrl".into(), json!(url));
+            if !headers.is_empty() {
+                params.insert("headers".into(), Value::Object(headers));
+            }
             params.insert(
                 "targetDirectory".into(),
                 json!(cfg.download_dir.clone().unwrap_or_else(|| {
@@ -504,7 +510,6 @@ fn handle(
             cmd.spawn().map_err(|e| format!("explorer: {}", e))?;
             Ok(json!({"ok": true}))
         }
-        "list" => Ok(json!({"tasks": []})), // populated once repo IPC lands
         other => Err(format!("command not allowed: {}", other)),
     }
 }

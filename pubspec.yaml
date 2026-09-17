@@ -21,8 +21,6 @@ workspace:
   - packages/adapter-ffmpeg
   - apps/engine-host
   - apps/desktop
-  - apps/updater
-  - plugin-host
   - test-server
 
 dependencies:

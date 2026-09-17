@@ -142,6 +142,24 @@
   ffmpeg 9.0.1 (mux), full pipeline end to end, media E2E over
   protocol v2 against the local HLS fixture.
 
+## Post-rename hardening (jjamIDM)
+
+- Downloads stage into `<name>.part`; renamed to the final name only
+  after assemble completes. Failed tasks drop the `.part` artifact
+  (temp segments kept for retry), cancelled tasks remove both.
+- `media` command now forwards browser-context headers (cookie/UA/
+  referer) end-to-end: extension → native host (validated) →
+  media.enqueue → MediaSelection.headers → resolver + yt-dlp
+  downloader (`--add-headers`) + port gains `subtitleLangs`.
+- Extension stores bounded (tasks 500 / captureFailed+doneNotified
+  1000, insertion-order eviction). Popup probes `task.status` for
+  active tasks and marks `known:false` entries "종료됨" with no
+  controls — stale tasks can't be sent commands after restart.
+- Removed stubs: `apps/updater`, `plugin-host`, native-host `list`
+  command (hardcoded `[]`), related workspace/script references.
+  `packages/update-api` + `packages/plugin-api` stay — real tested
+  code, reserved for component updates/plugins.
+
 ## Environment notes
 
 - OS: Windows (user machine). git 2.39, node 24, python 3.10 present.

@@ -14,6 +14,16 @@ const pending = new Map(); // requestId -> {resolve, reject}
 const tasks = new Map();   // taskId -> latest event snapshot
 const doneNotified = new Set(); // taskIds already notified terminal
 
+// In-session stores are bounded — the service worker is long-lived
+// and we don't want unbounded growth across many downloads.
+function boundedPut(map, key, value, cap) {
+  map.set(key, value);
+  while (map.size > cap) map.delete(map.keys().next().value);
+}
+const boundedAdd = (set, key, cap) =>
+  boundedPut(set, key, true, cap);
+const TASK_CAP = 500, SET_CAP = 1000;
+
 const notifPaths = new Map(); // notificationId -> outputPath
 
 function notify(title, message) {
@@ -72,7 +82,7 @@ function ensurePort() {
       const id = rec.taskId || (rec.task && rec.task.id) || rec.id;
       if (!id) return;
       const prev = tasks.get(id) || {};
-      tasks.set(id, { ...prev, ...rec });
+      boundedPut(tasks, id, { ...prev, ...rec }, TASK_CAP);
       // File events carry `type`; media task snapshots carry `status`.
       const st = rec.status || rec.type;
       // A fresh attempt (resume/retry) clears the terminal flag so a
@@ -81,14 +91,14 @@ function ensurePort() {
       // Notify terminal states exactly once per task — engine retries
       // can interleave progress events between failure emissions.
       if (st === 'completed' && !doneNotified.has(id)) {
-        doneNotified.add(id);
+        boundedAdd(doneNotified, id, SET_CAP);
         const name = rec.fileName ||
             (rec.output && rec.output.fileName) ||
             (rec.outputPath || '').split(/[\\/]/).pop() || id;
         notifyDone(name, rec.outputPath);
       }
       if (st === 'failed' && !doneNotified.has(id)) {
-        doneNotified.add(id);
+        boundedAdd(doneNotified, id, SET_CAP);
         notify('jjamIDM — 다운로드 실패',
             rec.error || rec.detail || rec.lastError || id);
       }
@@ -161,7 +171,14 @@ async function sendToFreeDM({ url, referer, filename, pageUrl }) {
 // Media page (YouTube watch etc.) → host-side media pipeline.
 // The engine resolves formats with yt-dlp and muxes with FFmpeg.
 async function sendMediaToFreeDM(pageUrl) {
-  const res = await call('media', { pageUrl });
+  // Login-gated media needs the browser's session — forward cookies,
+  // UA and Referer like a file download does.
+  const headers = {};
+  const cookie = await cookiesFor(pageUrl);
+  if (cookie) headers.cookie = cookie;
+  headers['user-agent'] = navigator.userAgent;
+  headers['referer'] = pageUrl;
+  const res = await call('media', { pageUrl, headers });
   notify('jjamIDM — 미디어 다운로드 시작', pageUrl);
   return res.taskId;
 }
@@ -191,14 +208,15 @@ chrome.downloads.onCreated.addListener(async (item) => {
       filename: item.filename ? item.filename.split(/[\\/]/).pop() : undefined,
       pageUrl: item.referrer,
     });
-    tasks.set(taskId, { taskId, type: 'progress', receivedBytes: 0 });
+    boundedPut(tasks, taskId,
+        { taskId, type: 'progress', receivedBytes: 0 }, TASK_CAP);
   } catch (e) {
     console.warn('capture failed, leaving browser download off', e);
     notify('jjamIDM — 전송 실패 (브라우저 다운로드로 복구)', String(e));
     // Hand it back to the browser once — and never recapture this
     // URL, or we'd loop failing downloads forever.
-    captureFailed.add(item.url);
-    if (item.finalUrl) captureFailed.add(item.finalUrl);
+    boundedAdd(captureFailed, item.url, SET_CAP);
+    if (item.finalUrl) boundedAdd(captureFailed, item.finalUrl, SET_CAP);
     try { await chrome.downloads.download({ url: item.url }); } catch {}
   }
 });

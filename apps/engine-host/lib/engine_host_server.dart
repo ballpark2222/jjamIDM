@@ -219,6 +219,9 @@ final class EngineHostServer {
                 (req.params['subtitleLangs'] as List?)?.cast<String>() ??
                     const [],
             outputFileName: req.params['outputFileName'] as String?,
+            headers: (req.params['headers'] as Map?)
+                    ?.cast<String, String>() ??
+                const {},
           ),
           workDir: req.params['workDir'] as String? ??
               '${_tempRoot.path}${Platform.pathSeparator}media',

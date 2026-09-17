@@ -115,6 +115,7 @@ final class FakeDownloader implements ComponentDownloader {
       required String outputPath,
       String? formatId,
       Map<String, String> headers = const {},
+      List<String> subtitleLangs = const [],
       void Function(double)? onProgress}) async {
     calls++;
     onProgress?.call(1.0);

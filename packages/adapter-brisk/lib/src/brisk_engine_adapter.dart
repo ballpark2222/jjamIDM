@@ -8,10 +8,17 @@ import 'package:path/path.dart' as p;
 
 /// Per-task bookkeeping for the vendored Brisk engine.
 final class _BriskTask {
-  _BriskTask(this.item, this.settings);
+  _BriskTask(this.item, this.settings, this.finalPath, this.tempDir);
 
   final brisk.DownloadItemModel item;
   final brisk.DownloadSettings settings;
+
+  /// Real output name — item.filePath carries the `.part` staging
+  /// name while downloading; renamed on completion.
+  final String finalPath;
+
+  /// Per-task segment/temp dir — deleted when the task is cancelled.
+  final Directory tempDir;
   final events = StreamController<EngineEvent>.broadcast();
   EngineProgress? lastProgress;
 }
@@ -227,7 +234,10 @@ final class BriskEngineAdapter implements DownloadEngine {
     final item = brisk.DownloadItemModel(
       uid: uid,
       fileName: fileName,
-      filePath: filePath,
+      // Download into a `.part` staging name; only completed files
+      // get the real name — a bare filename in Downloads is never a
+      // silently-truncated artifact.
+      filePath: '$filePath.part',
       downloadUrl: request.source.effectiveUrl,
       progress: 0,
       fileSize: info?.contentLength ??
@@ -245,7 +255,7 @@ final class BriskEngineAdapter implements DownloadEngine {
       connectionRetryTimeoutMillis: _retryTimeout,
       maxConnectionRetryCount: _maxRetries,
     );
-    _tasks[uid] = _BriskTask(item, settings);
+    _tasks[uid] = _BriskTask(item, settings, filePath, taskTemp);
     return EngineTaskHandle(engineTaskId: uid);
   }
 
@@ -334,12 +344,23 @@ final class BriskEngineAdapter implements DownloadEngine {
 
     if (msg.completionSignal ||
         status == brisk.DownloadStatus.assembleComplete) {
+      // Promote the .part staging file to its final name.
+      var outPath = item.filePath;
+      try {
+        final staging = File(outPath);
+        if (staging.existsSync()) {
+          final target = File(t.finalPath);
+          if (target.existsSync()) target.deleteSync();
+          staging.renameSync(t.finalPath);
+          outPath = t.finalPath;
+        }
+      } catch (_) {}
       t.events
         ..add(EngineProgress(
           receivedBytes: item.fileSize,
           totalBytes: item.fileSize,
         ))
-        ..add(EngineCompleted(outputPath: item.filePath));
+        ..add(EngineCompleted(outputPath: outPath));
       unawaited(t.events.close());
       _tasks.remove(uid);
       return;
@@ -350,6 +371,11 @@ final class BriskEngineAdapter implements DownloadEngine {
     }
     if (status == brisk.DownloadStatus.failed ||
         status == brisk.DownloadStatus.assembleFailed) {
+      // Drop the visible .part artifact — it is never a valid file.
+      // Temp segments stay so a retry/resume can continue.
+      try {
+        File(item.filePath).deleteSync();
+      } catch (_) {}
       t.events.add(EngineFailed(ErrorCode.unknown,
           detail: msg.message.isEmpty ? status : msg.message));
       unawaited(t.events.close());
@@ -357,6 +383,14 @@ final class BriskEngineAdapter implements DownloadEngine {
       return;
     }
     if (status == brisk.DownloadStatus.canceled) {
+      // Cancel = abandon: remove the .part artifact AND the temp
+      // segments — nothing left to resume.
+      try {
+        File(item.filePath).deleteSync();
+      } catch (_) {}
+      try {
+        t.tempDir.deleteSync(recursive: true);
+      } catch (_) {}
       t.events.add(const EngineFailed(ErrorCode.cancelledByUser));
       unawaited(t.events.close());
       _tasks.remove(uid);

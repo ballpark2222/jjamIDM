@@ -29,14 +29,28 @@ async function refresh() {
   for (const [id, t] of Object.entries(tasks).slice(-15).reverse()) {
     const div = document.createElement('div');
     div.className = 'task';
+    const st = t.status || t.type || '?';
+    const terminal = ['completed', 'failed', 'cancelled'].includes(st);
+    // Engine was restarted → task unknown → controls can't work.
+    let dead = terminal;
+    // media tasks live in the coordinator — task.status doesn't know
+    // them, so the liveness probe only applies to engine tasks.
+    if (!dead && !t.media) {
+      try {
+        const r = await sendBg({ cmd: 'status', taskId: id });
+        if (r && r.known === false) dead = true;
+      } catch { dead = true; }
+    }
+    const label = dead && !terminal ? `${st} — 종료됨` : st;
     const pct = t.totalBytes ? Math.round(100 * (t.receivedBytes || 0) / t.totalBytes) : 0;
     div.innerHTML = `
-      <div class="id">${id.slice(0, 12)}… — ${t.status || t.type || '?'}</div>
+      <div class="id">${id.slice(0, 12)}… — ${label}</div>
       <progress max="100" value="${pct}"></progress>
       <div>${fmt(t.receivedBytes)} / ${fmt(t.totalBytes)}
+        ${dead ? '' : `
         <button data-a="pause">⏸</button>
         <button data-a="resume">▶</button>
-        <button data-a="cancel">✕</button></div>`;
+        <button data-a="cancel">✕</button>`}</div>`;
     div.querySelectorAll('button').forEach((b) => {
       b.onclick = async () => { await sendBg({ cmd: b.dataset.a, taskId: id }); };
     });

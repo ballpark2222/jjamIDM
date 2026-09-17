@@ -12,7 +12,7 @@ if [ -z "${FLUTTER_ROOT:-}" ]; then
   done
 fi
 fail=0
-for pkg in packages/* apps/engine-host apps/desktop apps/updater plugin-host test-server; do
+for pkg in packages/* apps/engine-host apps/desktop test-server; do
   if [ -d "$pkg/test" ] && ls "$pkg/test"/*_test.dart >/dev/null 2>&1; then
     echo "=== $pkg"
     # Widget tests need the Flutter test runner, not `dart test`.

@@ -22,7 +22,7 @@ Brisk / yt-dlp / FFmpeg are **replaceable providers**, not the product core.
 
 ## Layout
 
-- `apps/` — desktop, engine-host, native-host (Rust), updater
+- `apps/` — desktop, engine-host, native-host (Rust)
 - `packages/` — Dart packages: core-domain, application, *-api ports, adapter-*
 - `third_party/` — read-only vendored upstream snapshots + `patches/`
 - `browser/extension/` — TypeScript MV3 extension

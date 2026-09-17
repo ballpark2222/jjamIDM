@@ -97,7 +97,7 @@ final class MediaDownloadCoordinator {
     await Directory(workDir).create(recursive: true);
     try {
       task = _apply(task, DownloadStatus.resolvingMedia);
-      final plan = await _resolver.plan(sel);
+      final plan = await _resolver.plan(sel, headers: sel.headers);
       // ready is the gate state between resolution and downloads.
       task = _apply(task, DownloadStatus.ready);
       final produced = <String>[]; // artifact paths, in plan order
@@ -236,7 +236,9 @@ final class MediaDownloadCoordinator {
     final code = await dl.download(
         pageUrl: sel.pageUrl,
         outputPath: path,
-        formatId: step.formatId);
+        formatId: step.formatId,
+        headers: sel.headers,
+        subtitleLangs: sel.subtitleLangs);
     if (code != 0) {
       throw StateError('${step.componentId} exited $code');
     }

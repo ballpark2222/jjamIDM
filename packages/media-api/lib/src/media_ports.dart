@@ -32,6 +32,7 @@ abstract interface class ComponentDownloader {
     required String outputPath,
     String? formatId,
     Map<String, String> headers,
+    List<String> subtitleLangs,
     void Function(double progress)? onProgress,
   });
 }
