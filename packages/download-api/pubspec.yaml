@@ -6,6 +6,8 @@ environment:
   sdk: ^3.13.0
 resolution: workspace
 dependencies:
+  freedm_core_domain:
+    path: ../core-domain
 dev_dependencies:
   test: ^1.26.0
   lints: ^6.0.0

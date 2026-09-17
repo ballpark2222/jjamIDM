@@ -55,8 +55,7 @@ void main() {
   for (final rule in all) {
     final dir = Directory(rule.scopePrefix);
     if (!dir.existsSync()) continue;
-    for (final entity
-        in dir.listSync(recursive: true).whereType<File>()) {
+    for (final entity in dir.listSync(recursive: true).whereType<File>()) {
       if (!entity.path.endsWith('.dart')) continue;
       final lines = entity.readAsLinesSync();
       for (var i = 0; i < lines.length; i++) {
