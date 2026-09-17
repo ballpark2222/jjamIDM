@@ -26,6 +26,7 @@ workspace:
   - test-server
 
 dependencies:
+  crypto: ^3.0.7
   freedm_update_api:
     path: packages/update-api
 
