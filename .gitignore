@@ -8,9 +8,8 @@ build/
 # Workspace resolution artifacts
 .pub/
 
-# Rust
+# Rust (Cargo.lock IS committed — binary needs reproducible deps)
 target/
-Cargo.lock
 
 # Node / browser extension
 node_modules/

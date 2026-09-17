@@ -1,0 +1,13 @@
+{
+  "allowedOrigins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ],
+  "engineCommand": [
+    "C:\\Users\\myhome\\Documents\\AI_Class\\.tools\\dart-sdk\\bin\\dart.exe",
+    "bin/main.dart",
+    "--temp-root",
+    "C:\\Users\\myhome\\AppData\\Local\\Temp\\freedm-engine"
+  ],
+  "engineCwd": "C:\\Users\\myhome\\Documents\\AI_Class\\freedm\\apps\\engine-host",
+  "downloadDir": "C:\\Users\\myhome\\Downloads"
+}

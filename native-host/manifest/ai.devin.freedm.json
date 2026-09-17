@@ -1,0 +1,9 @@
+{
+  "name": "ai.devin.freedm",
+  "description": "FreeDM native messaging host",
+  "path": "C:\\Program Files\\FreeDM\\freedm_native_host.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}
