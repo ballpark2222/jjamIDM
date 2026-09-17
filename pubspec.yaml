@@ -25,6 +25,10 @@ workspace:
   - plugin-host
   - test-server
 
+dependencies:
+  freedm_update_api:
+    path: packages/update-api
+
 dev_dependencies:
   lints: ^6.0.0
   test: ^1.26.0

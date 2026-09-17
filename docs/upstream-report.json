@@ -1,0 +1,38 @@
+{
+  "generatedAt": "2026-09-17T11:17:24.283420Z",
+  "components": [
+    {
+      "componentId": "engine.brisk",
+      "pinned": "ec9e4f10ac1498e1ed9d6128276277641636b392",
+      "latest": "ec9e4f10ac1498e1ed9d6128276277641636b392",
+      "updateAvailable": false,
+      "repository": "https://github.com/BrisklyDev/brisk_download_engine",
+      "license": "MIT",
+      "assetUrl": null,
+      "error": null,
+      "checkedAt": "2026-09-17T11:17:24.223100Z"
+    },
+    {
+      "componentId": "media.ytdlp",
+      "pinned": "TO_PIN_ON_INSTALL",
+      "latest": "2026.08.19",
+      "updateAvailable": true,
+      "repository": "https://github.com/yt-dlp/yt-dlp",
+      "license": "Unlicense",
+      "assetUrl": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe",
+      "error": null,
+      "checkedAt": "2026-09-17T11:17:24.249625Z"
+    },
+    {
+      "componentId": "media.ffmpeg",
+      "pinned": "TO_PIN_ON_INSTALL",
+      "latest": "latest",
+      "updateAvailable": true,
+      "repository": "https://github.com/BtbN/FFmpeg-Builds",
+      "license": "LGPL/GPL (build dependent)",
+      "assetUrl": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+      "error": null,
+      "checkedAt": "2026-09-17T11:17:24.283420Z"
+    }
+  ]
+}

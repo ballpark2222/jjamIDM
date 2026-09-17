@@ -21,16 +21,35 @@
 - M6 extension MV3: download auto-capture, context menu
   (link/page/selected-links), cookie+referer+UA propagation, popup
   (toggle, task list, pause/resume/cancel).
+- M7-9 media layer: media-api normalized ports (resolver/muxer),
+  yt-dlp adapter (argv-vector process, JSON probe, plan builder),
+  FFmpeg adapter (argv-vector mux/subtitle/version probe) —
+  10 adapter tests pass via Dart fake-binary shims.
+- M10 media detection: MediaUrlClassifier (host/extension/
+  content-type signals → file|media pipeline) — 5 tests pass.
+- M11 URL refresh: UrlRefreshResolver port, SameFileValidator
+  (etag/lastModified/length/contentType → match|indeterminate|
+  conflict), scheduler wiring (urlExpired|forbidden → refresh →
+  replaceSource → continue partial; conflict fails the task) —
+  11 tests pass.
+- M12 component manager: update-api (candidate/store/verifier ports),
+  ComponentManager (check→fetch→verify→install→atomic activate→GC),
+  version pinning, rollback, engine-affinity refs, Sha256OnlyVerifier,
+  LocalBundleStore (atomic state.json) — 5 tests pass.
+- M13 upstream pipeline: registry parser, UpstreamWatch (GitHub API,
+  injectable fetch), BundleBuilder (deterministic .fdmbundle =
+  ustar payload + per-file sha256 manifest + patch-queue provenance),
+  tools/upstream-watch + tools/component-build — 9 tests pass;
+  live run verified against GitHub (docs/upstream-report.json).
 
 ## In Progress
 
-- M7-9 — media API + yt-dlp/FFmpeg adapters
+- (none)
 
 ## Not Started
 
-- M7 media APIs · M8 yt-dlp · M9 FFmpeg · M10 media detection · M11 URL refresh
-- M12 component manager · M13 upstream pipeline · M14 UI
-- M15 RC + audit handoff
+- M14 desktop UI (Flutter — SDK not installed)
+- M15 RC packaging + audit handoff
 
 ## Blockers
 
@@ -38,13 +57,14 @@
 
 ## Test Summary
 
-- unit: core-domain 13, event-bus (M1 batch), persistence 4
-- application: scheduler 8 (concurrency, priority, pause/resume/
-  cancel, retry, checksum, speed-limit gating, restart recovery)
-- contract: adapter-brisk 8 (probe, caps, full+hash, pause/resume,
-  cookie auth, restart-resume, drop-retry, cancel)
+- unit: core-domain 13, event-bus 1, persistence 4, media-api 5,
+  update-api 14
+- application: scheduler 8 + url-refresh 11 (refresh→resume,
+  same-file conflict, refresh failure, manual refreshSource)
+- contract: adapter-brisk 8, adapter-ytdlp 6, adapter-ffmpeg 4
 - integration: fixture server 12
-- e2e: n/a
+- e2e: native host → engine host → brisk → disk (M5)
+- total: 71 dart tests green
 
 ## Known Limitations (for audit notes)
 
@@ -56,10 +76,14 @@
 - Brisk aggregate progress message reports totalReceivedBytes=0;
   adapter sums per-connection counts instead.
 - Brisk has no speed limiter — FreeDM throttle layer required (M4).
+- Sha256OnlyVerifier checks hashes only; release builds must plug a
+  minisign/ed25519 SignatureVerifier against a pinned public key.
+- yt-dlp/FFmpeg adapters verified against fake shims; real-binary
+  contract tests deferred to M15 release verification.
 
 ## Environment notes
 
 - OS: Windows (user machine). git 2.39, node 24, python 3.10 present.
 - Dart SDK 3.13.4 vendored at `../.tools/dart-sdk` (outside repo, not committed).
+- Rust 1.98.1 (gnu toolchain) installed — native-host builds.
 - Flutter SDK: NOT installed — required only at M14 (desktop GUI).
-- Rust toolchain: NOT installed — required at M5.
