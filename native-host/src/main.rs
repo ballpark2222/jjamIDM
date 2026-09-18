@@ -35,6 +35,7 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "status",
     "reveal",
     "open",
+    "pickFolder",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +68,12 @@ struct Config {
     max_concurrent: u32,
     /// Persistent queue dir for the scheduler (task repo JSON).
     queue_dir: Option<String>,
+    /// This config file's own path — pickedDirs persists back here.
+    path: Option<String>,
+    /// Absolute dirs the user physically chose in the OS folder
+    /// picker. These are the ONLY non-downloadDir roots a download
+    /// may target — the extension cannot invent one.
+    picked_dirs: Vec<String>,
 }
 
 fn load_config() -> Config {
@@ -93,6 +100,8 @@ fn load_config() -> Config {
                 .parent()
                 .map(|d| d.join("queue").to_string_lossy().into_owned())
         }),
+        path: path.clone(),
+        picked_dirs: vec![],
     };
     if let Some(p) = path {
         if let Ok(raw) = std::fs::read_to_string(&p) {
@@ -129,6 +138,14 @@ fn load_config() -> Config {
                     .filter(|s| !s.is_empty())
                 {
                     cfg.queue_dir = Some(q.to_string());
+                }
+                if let Some(list) =
+                    j.get("pickedDirs").and_then(|v| v.as_array())
+                {
+                    cfg.picked_dirs = list
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect();
                 }
             }
         }
@@ -196,6 +213,29 @@ fn validate_subdir(s: &str) -> Result<String, String> {
         }
     }
     Ok(norm)
+}
+
+/// Record a user-picked absolute dir into pickedDirs (deduped) and
+/// write it back to the config file — picked dirs must survive a
+/// restart or open/reveal would refuse files already saved there.
+fn persist_picked_dir(cfg: &mut Config, dir: &str) {
+    if cfg.picked_dirs.iter().any(|d| d == dir) {
+        return;
+    }
+    cfg.picked_dirs.push(dir.to_string());
+    let Some(p) = cfg.path.clone() else { return };
+    let mut j = std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or_else(|| json!({}));
+    j["pickedDirs"] = json!(cfg.picked_dirs);
+    if let Some(parent) = std::path::Path::new(&p).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(
+        &p,
+        serde_json::to_string_pretty(&j).unwrap_or_default(),
+    );
 }
 
 // --------------------------------------------------------------------
@@ -516,7 +556,7 @@ fn task_id_of(payload: &Map<String, Value>) -> Result<String, String> {
 fn handle(
     msg: &BrowserMessage,
     engine: &mut Option<EngineClient>,
-    cfg: &Config,
+    cfg: &mut Config,
     subs: &mut BTreeSet<String>,
 ) -> Result<Value, String> {
     match msg.command.as_str() {
@@ -533,6 +573,64 @@ fn handle(
                 "protocol": PROTOCOL_VERSION,
                 "engineReachable": engine_ok,
             }))
+        }
+        "pickFolder" => {
+            // OS folder picker — the ONLY channel through which an
+            // absolute target dir can enter the system. The returned
+            // path is user consent, not browser input: a dir inside
+            // downloadDir comes back as a plain subdir, anything
+            // outside is recorded in pickedDirs and returned as an
+            // absolute root the download command will accept.
+            let root = cfg.download_dir.clone().unwrap_or_else(|| {
+                env::var("USERPROFILE")
+                    .map(|u| format!("{}\\Downloads", u))
+                    .unwrap_or_else(|_| ".".into())
+            });
+            // FolderBrowserDialog needs STA; a borderless top-most
+            // owner form keeps the picker in front of the browser.
+            // OutputEncoding forces UTF-8 so non-ASCII paths
+            // survive the console pipe.
+            let script = concat!(
+                "Add-Type -AssemblyName System.Windows.Forms;",
+                "$f = New-Object System.Windows.Forms.Form;",
+                "$f.TopMost = $true; $f.ShowInTaskbar = $false;",
+                "$d = New-Object System.Windows.Forms.FolderBrowserDialog;",
+                "$d.Description = 'Select download folder';",
+                "$d.ShowNewFolderButton = $true;",
+                "$d.SelectedPath = $env:JJAMIDM_PICK_ROOT;",
+                "[Console]::OutputEncoding = [Text.Encoding]::UTF8;",
+                "if ($d.ShowDialog($f) -eq 'OK') ",
+                "{ [Console]::Out.Write($d.SelectedPath) }"
+            );
+            let out = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-STA", "-Command", script])
+                .env("JJAMIDM_PICK_ROOT", &root)
+                .output()
+                .map_err(|e| format!("folder picker: {}", e))?;
+            let picked =
+                String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if picked.is_empty() {
+                return Ok(json!({"cancelled": true}));
+            }
+            // The picker can name a not-yet-created folder
+            // (ShowNewFolderButton); materialize then canonicalize.
+            std::fs::create_dir_all(&picked)
+                .map_err(|e| format!("cannot create folder: {}", e))?;
+            let canon = std::fs::canonicalize(&picked)
+                .map_err(|e| format!("canonicalize: {}", e))?;
+            let canon_base = std::fs::canonicalize(&root)
+                .map_err(|_| "downloadDir not found".to_string())?;
+            if let Ok(rel) = canon.strip_prefix(&canon_base) {
+                return Ok(json!({
+                    "subdir": rel.to_string_lossy().replace('/', "\\"),
+                }));
+            }
+            let abs = canon
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_string();
+            persist_picked_dir(cfg, &abs);
+            Ok(json!({"absDir": abs}))
         }
         "download" => {
             let p = &msg.payload;
@@ -562,6 +660,32 @@ fn handle(
                     .map(|u| format!("{}\\Downloads", u))
                     .unwrap_or_else(|_| ".".into())
             });
+            // absDir may only name a dir the user physically picked
+            // in the OS folder dialog this session or earlier —
+            // anything else is an invented path and is rejected.
+            if let Some(abs) = p.get("absDir").and_then(|v| v.as_str()) {
+                if abs.is_empty() || abs.len() > 1024
+                    || abs.chars().any(|c| c.is_control())
+                {
+                    return Err("invalid absDir".into());
+                }
+                let canon = std::fs::canonicalize(abs)
+                    .map_err(|_| "picked folder not found".to_string())?;
+                // canonicalize yields \\?\ verbatim paths; picked
+                // dirs are stored stripped — compare like with like.
+                let canon_s = canon
+                    .to_string_lossy()
+                    .trim_start_matches(r"\\?\")
+                    .to_string();
+                let inside = cfg.picked_dirs.iter().any(|d| {
+                    std::path::Path::new(&canon_s)
+                        .starts_with(std::path::Path::new(d))
+                });
+                if !inside {
+                    return Err("absDir was not user-picked".into());
+                }
+                target_dir = canon_s;
+            }
             if let Some(sub) = p.get("subdir").and_then(|v| v.as_str()) {
                 let rel = validate_subdir(sub)?;
                 target_dir = format!("{}\\{}", target_dir, rel);
@@ -730,7 +854,21 @@ fn handle(
                 .map_err(|_| "downloadDir not found".to_string())?;
             let canon_path = std::fs::canonicalize(raw)
                 .map_err(|_| "path not found".to_string())?;
-            if !canon_path.starts_with(&canon_base) {
+            // Files the user chose to save outside downloadDir (via
+            // the OS picker) stay openable — picked_dirs are the
+            // only other allowed roots. picked_dirs are stored
+            // stripped, so compare against a de-verbatimized path.
+            let canon_s = canon_path
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_string();
+            if !canon_path.starts_with(&canon_base)
+                && !cfg
+                    .picked_dirs
+                    .iter()
+                    .any(|d| std::path::Path::new(&canon_s)
+                        .starts_with(std::path::Path::new(d)))
+            {
                 return Err("path outside downloadDir".into());
             }
             // canonicalize yields \\?\ verbatim paths — explorer.exe
@@ -785,7 +923,7 @@ fn write_frame(out: &mut impl Write, v: &Value) -> io::Result<()> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let cfg = load_config();
+    let mut cfg = load_config();
 
     // --self-test bypasses the origin check for local dev/CI only;
     // browsers always pass the extension origin as argv[1].
@@ -880,7 +1018,7 @@ fn main() {
                     respond(&msg, Err(format!(
                         "command not allowed: {}", msg.command)))
                 } else {
-                    respond(&msg, handle(&msg, &mut engine, &cfg, &mut subscribed))
+                    respond(&msg, handle(&msg, &mut engine, &mut cfg, &mut subscribed))
                 };
                 if write_frame(&mut output, &reply).is_err() {
                     break;

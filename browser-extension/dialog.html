@@ -14,6 +14,9 @@
   .row { display: flex; gap: 8px; align-items: end; }
   .row > div { flex: 1; }
   .row .num { flex: 0 0 90px; }
+  .row .ext { flex: 0 0 80px; }
+  .row .browse { flex: 0 0 auto; }
+  .row.customdir { margin-top: 6px; align-items: center; }
   input[type=number] { width: 100%; box-sizing: border-box; padding: 6px 8px;
     border: 1px solid #bbb; border-radius: 4px; font-size: 13px; }
   .btns { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
@@ -27,13 +30,21 @@
 <h1>다운로드 시작</h1>
 <div class="url" id="url"></div>
 <label>파일 이름</label>
-<input id="filename" type="text">
+<div class="row">
+  <div><input id="filename" type="text"></div>
+  <div class="ext"><label>확장자</label><input id="ext" type="text" placeholder="mp4"></div>
+</div>
 <div class="row">
   <div>
     <label>저장 폴더</label>
     <select id="subdir">
       <option value="">(기본 폴더)</option>
     </select>
+    <div class="row customdir">
+      <div><input id="customdir" type="text"
+                  placeholder="직접 입력 또는 찾아보기"></div>
+      <div class="browse"><button id="browse" type="button">찾아보기</button></div>
+    </div>
   </div>
   <div class="num">
     <label>연결 수</label>

@@ -190,7 +190,7 @@ function ensurePort() {
   return port;
 }
 
-function call(command, payload = {}) {
+function call(command, payload = {}, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const requestId = ++reqSeq;
     pending.set(requestId, { resolve, reject });
@@ -204,7 +204,7 @@ function call(command, payload = {}) {
     });
     setTimeout(() => {
       if (pending.delete(requestId)) reject(new Error('host timeout'));
-    }, 30000);
+    }, timeoutMs);
   });
 }
 
@@ -219,7 +219,7 @@ async function cookiesFor(url) {
 }
 
 async function sendToFreeDM({
-  url, referer, filename, pageUrl, subdir, startNow = true,
+  url, referer, filename, pageUrl, subdir, absDir, startNow = true,
   maxConnections, priority,
 }) {
   const headers = {};
@@ -233,6 +233,9 @@ async function sendToFreeDM({
     userAgent: navigator.userAgent,
     headers,
     subdir: subdir || undefined,
+    // Only a host-picked path is accepted — the host rejects any
+    // absDir it did not hand out through the OS folder dialog.
+    absDir: absDir || undefined,
     start: startNow,
     maxConnections,
     priority,
@@ -288,7 +291,7 @@ function openStartDialog(payload) {
     url: `dialog.html#${token}`,
     type: 'popup',
     width: 540,
-    height: 330,
+    height: 400,
     focused: true,
   }).then((w) => {
     if (!w || w.id == null) return;
@@ -488,6 +491,10 @@ chrome.runtime.onMessage.addListener((m, _s, send) => {
       // and refuses anything outside downloadDir.
       send(await call(m.cmd, { path: m.path }));
     // -- start-dialog round trip --
+    } else if (m.cmd === 'pickFolder') {
+      // OS picker can sit open while the user browses — the default
+      // 30s host timeout is too short for a human decision.
+      send(await call('pickFolder', {}, 180000));
     } else if (m.cmd === 'dialogGet') {
       send(pendingDialog.get(m.token) || { error: 'expired' });
     } else if (m.cmd === 'dialogDone') {
@@ -499,6 +506,7 @@ chrome.runtime.onMessage.addListener((m, _s, send) => {
           ...req,
           filename: m.filename || req.filename,
           subdir: m.subdir,
+          absDir: m.absDir,
           maxConnections: m.maxConnections,
           startNow: m.startNow,
         });
