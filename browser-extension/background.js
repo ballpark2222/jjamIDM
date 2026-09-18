@@ -20,8 +20,13 @@ function boundedPut(map, key, value, cap) {
   map.set(key, value);
   while (map.size > cap) map.delete(map.keys().next().value);
 }
-const boundedAdd = (set, key, cap) =>
-  boundedPut(set, key, true, cap);
+// Sets expose .add/.delete, not .set — boundedPut's map API throws
+// on a Set, which used to kill terminal notifications AND the
+// browser hand-back below captureFailed's add.
+function boundedAdd(set, key, cap) {
+  set.add(key);
+  while (set.size > cap) set.delete(set.keys().next().value);
+}
 const TASK_CAP = 500, SET_CAP = 1000;
 
 const notifPaths = new Map(); // notificationId -> outputPath

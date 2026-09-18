@@ -37,15 +37,21 @@ function renderProbe(r) {
   if (status) status.remove();
   const list = $('#formats');
   if (!r || r.error) {
-    list.innerHTML =
-        `<div id="probe-status">형식 확인 실패: ${r?.error || '응답 없음'}</div>`;
+    // r.error arrives from the host — never innerHTML remote text.
+    const d = document.createElement('div');
+    d.id = 'probe-status';
+    d.textContent = `형식 확인 실패: ${r?.error || '응답 없음'}`;
+    list.replaceChildren(d);
     addOption('최고 화질 (자동)', '기본값으로 시도', null, null, true);
     $('#now').disabled = false;
     return;
   }
   if (r.supported === false) {
-    list.innerHTML =
-        '<div id="probe-status">지원하지 않는 페이지일 수 있습니다 — 그래도 시도할 수 있습니다.</div>';
+    const d = document.createElement('div');
+    d.id = 'probe-status';
+    d.textContent =
+        '지원하지 않는 페이지일 수 있습니다 — 그래도 시도할 수 있습니다.';
+    list.replaceChildren(d);
     addOption('최고 화질 (자동)', '기본값으로 시도', null, null, true);
     $('#now').disabled = false;
     return;
