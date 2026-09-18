@@ -306,7 +306,9 @@ final class MediaDownloadCoordinator {
       if (run.produced.isNotEmpty) {
         final src = run.produced.last;
         var name = plan.finalFileName;
-        if (!name.contains('.')) {
+        // Only a trailing ext-looking suffix counts (letters
+        // required) — 'v1.2 video' holds a dot but carries no ext.
+        if (!RegExp(r'\.(?=\w*[A-Za-z])\w{1,8}$').hasMatch(name)) {
           final dot = src.lastIndexOf('.');
           if (dot > src.lastIndexOf(Platform.pathSeparator)) {
             name += src.substring(dot); // keep container ext
@@ -490,7 +492,39 @@ final class MediaDownloadCoordinator {
     if (code != 0) {
       throw StateError('${step.componentId} exited $code');
     }
-    return path;
+    return _producedFile(run.workDir, step.outputFileName, path);
+  }
+
+  /// The downloader may have written a sibling of [path] — yt-dlp
+  /// appends the real container ext to a bare `-o` name
+  /// (`name.%(ext)s`). Resolve the actual artifact or the delivered
+  /// file loses its extension.
+  static String _producedFile(
+      String workDir, String outputFileName, String path) {
+    if (File(path).existsSync()) return path;
+    // Same-stem siblings minus temp/intermediate artifacts:
+    // name.mp4.part, name.f137.mp4, name.ko.vtt are not the product.
+    const skip = {
+      '.part', '.ytdl', '.vtt', '.srt', '.ass', '.ssa',
+      '.ttml', '.srv', '.json', '.lrc', '.temp', '.tmp',
+    };
+    final intermediate = RegExp(r'\.f[^.]+\.');
+    File? best;
+    for (final f
+        in Directory(workDir).listSync().whereType<File>()) {
+      final name = f.uri.pathSegments.last;
+      if (!name.startsWith('$outputFileName.')) continue;
+      final dot = name.lastIndexOf('.');
+      final ext = dot > 0 ? name.substring(dot).toLowerCase() : '';
+      if (skip.contains(ext) || intermediate.hasMatch(name)) continue;
+      if (best == null || f.lengthSync() > best.lengthSync()) {
+        best = f;
+      }
+    }
+    if (best == null) {
+      throw StateError('component produced no output file');
+    }
+    return best.path;
   }
 
   DownloadTask _apply(DownloadTask t, DownloadStatus to,

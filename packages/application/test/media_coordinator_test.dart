@@ -125,6 +125,11 @@ final class FakeMuxer implements MediaMuxer {
 
 final class FakeDownloader implements ComponentDownloader {
   var calls = 0;
+
+  /// Simulates yt-dlp's `%(ext)s` — writes `outputPath + extSuffix`
+  /// instead of outputPath itself (real yt-dlp appends the
+  /// container ext to a bare -o name).
+  String? extSuffix;
   @override
   String get componentId => 'tool.ytdlp';
   @override
@@ -138,7 +143,7 @@ final class FakeDownloader implements ComponentDownloader {
       void Function(double)? onProgress}) async {
     calls++;
     onProgress?.call(1.0);
-    await File(outputPath).writeAsBytes([9]);
+    await File(outputPath + (extSuffix ?? '')).writeAsBytes([9]);
     return 0;
   }
 }
@@ -372,6 +377,37 @@ void main() {
     final done = await waitFor(mc, t.id, DownloadStatus.completed);
     expect(done.status, DownloadStatus.completed);
     expect(dl.calls, 2); // resume re-ran the same step
+    await mc.dispose();
+  });
+
+  test('component step with a bare output name delivers the '
+      'resolved container extension', () async {
+    // Real yt-dlp writes <name>.<container-ext> for a bare -o path
+    // — the coordinator must resolve that sibling artifact or the
+    // delivered file lands extensionless and won't open.
+    final dl = FakeDownloader()..extSuffix = '.mkv';
+    final mc = MediaDownloadCoordinator(
+      engine: FakeEngine(),
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'v', // bare — ext decided by the producer
+        steps: [
+          ComponentDownloadStep(
+              componentId: 'tool.ytdlp', outputFileName: 'v'),
+        ],
+      )),
+      muxer: FakeMuxer(),
+      componentDownloaders: {'tool.ytdlp': dl},
+    );
+    final t = await mc.enqueueMedia(
+      const MediaSelection(pageUrl: 'https://x/watch'),
+      workDir: '${dir.path}/work',
+      targetDirectory: dir.path,
+    );
+    await waitFor(mc, t.id, DownloadStatus.completed);
+    expect(File('${dir.path}/v.mkv').existsSync(), isTrue);
+    expect(File('${dir.path}/v').existsSync(), isFalse);
     await mc.dispose();
   });
 

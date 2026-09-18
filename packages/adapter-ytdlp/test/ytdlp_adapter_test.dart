@@ -120,6 +120,26 @@ void main() {
     expect(File(out).lengthSync(), 1024);
   });
 
+  test('bare outputPath is passed as name.%(ext)s so yt-dlp fills '
+      'the real container extension', () async {
+    final dl = YtDlpDownloader(
+      command: shim,
+      environment: {'FAKE_YTDLP_ARGV_LOG': argvLog.path},
+    );
+    final code = await dl.download(
+      pageUrl: 'http://fixture/v',
+      outputPath: '${tmp.path}\\bare name',
+      formatId: 'v720+a128',
+    );
+    expect(code, 0);
+    final argv = await loggedArgv();
+    final i = argv.last.indexOf('-o');
+    expect(argv.last[i + 1], '${tmp.path}\\bare name.%(ext)s');
+    // Fake substitutes mkv like a merged v+a download — the produced
+    // artifact carries a real extension.
+    expect(File('${tmp.path}\\bare name.mkv').existsSync(), isTrue);
+  });
+
   test('headers travel as --add-headers argv pairs, never a shell',
       () async {
     final dl = YtDlpDownloader(

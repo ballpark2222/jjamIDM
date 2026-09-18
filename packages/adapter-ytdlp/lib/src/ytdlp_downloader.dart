@@ -34,10 +34,17 @@ final class YtDlpDownloader implements ComponentDownloader {
     void Function(double progress)? onProgress,
     Duration timeout = const Duration(minutes: 30),
   }) async {
+    // A bare outputPath (no extension) must let yt-dlp fill in the
+    // real container ext — a literal -o path is written verbatim and
+    // produces an extensionless file that won't open on double-click.
+    // Only a trailing ext-looking suffix counts (letters required):
+    // 'v1.2 video' and 'Episode 1.5' hold dots but carry no ext.
+    final hasExt = RegExp(r'\.(?=\w*[A-Za-z])\w{1,8}$')
+        .hasMatch(outputPath.split(RegExp(r'[\\/]')).last);
     final args = <String>[
       '--newline',
       '--no-playlist',
-      '-o', outputPath,
+      '-o', hasExt ? outputPath : '$outputPath.%(ext)s',
       if (formatId != null && formatId.isNotEmpty) ...['-f', formatId],
       for (final e in headers.entries) ...['--add-headers', '${e.key}: ${e.value}'],
       if (subtitleLangs.isNotEmpty) ...[

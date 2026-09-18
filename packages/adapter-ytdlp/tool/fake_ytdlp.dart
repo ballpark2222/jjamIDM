@@ -58,7 +58,9 @@ Future<void> main(List<String> args) async {
   }
   final o = args.indexOf('-o');
   if (o >= 0) {
-    final out = File(args[o + 1]);
+    // Real yt-dlp replaces %(ext)s with the chosen container ext —
+    // substitute 'mkv' the way a merged v+a download would land.
+    final out = File(args[o + 1].replaceAll('%(ext)s', 'mkv'));
     for (var pct = 0; pct <= 100; pct += 25) {
       stdout.writeln('[download] $pct.0% of ~1.00MiB');
     }

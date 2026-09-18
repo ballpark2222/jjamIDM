@@ -103,10 +103,17 @@ void main() {
 
     final t = await done.future.timeout(const Duration(minutes: 3));
     expect(t.status, DownloadStatus.completed);
+    // The delivered artifact must carry a real container ext —
+    // component yt-dlp downloads used to land extensionless.
     expect(
         outDir.listSync().whereType<File>().any(
             (f) => f.lengthSync() > 0),
         isTrue);
+    final delivered = t.metadata['outputPath'];
+    expect(delivered, isNotNull);
+    expect(delivered,
+        matches(RegExp(r'\.(mp4|mkv|webm|ts|m4a|mov|avi)$')));
+    expect(File(delivered!).existsSync(), isTrue);
     await sub.cancel();
 
     // media.list snapshot — a client that missed the broadcast
