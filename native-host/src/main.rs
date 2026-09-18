@@ -215,6 +215,18 @@ fn validate_subdir(s: &str) -> Result<String, String> {
     Ok(norm)
 }
 
+/// canonicalize() yields \\?\ verbatim paths — neither explorer.exe
+/// nor argv consumers accept them. UNC paths get `\\?\UNC\a\b`,
+/// which must fold back to `\\a\b`, not `UNC\a\b`.
+fn deverbatim(canon: &std::path::Path) -> String {
+    let s = canon.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!("\\\\{}", rest)
+    } else {
+        s.trim_start_matches(r"\\?\").to_string()
+    }
+}
+
 /// Record a user-picked absolute dir into pickedDirs (deduped) and
 /// write it back to the config file — picked dirs must survive a
 /// restart or open/reveal would refuse files already saved there.
@@ -625,10 +637,7 @@ fn handle(
                     "subdir": rel.to_string_lossy().replace('/', "\\"),
                 }));
             }
-            let abs = canon
-                .to_string_lossy()
-                .trim_start_matches(r"\\?\")
-                .to_string();
+            let abs = deverbatim(&canon);
             persist_picked_dir(cfg, &abs);
             Ok(json!({"absDir": abs}))
         }
@@ -645,24 +654,18 @@ fn handle(
                 }
             }
             let headers = validated_headers(p)?;
-            ensure_engine(engine, cfg, subs)?;
 
-            let task_id = format!("{:x}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0));
-
-            // Optional type-folder routing: a relative subdir under
-            // the configured downloadDir. The browser never supplies
-            // absolute paths — validation above guarantees it.
+            // Resolve + validate the target dir BEFORE spawning the
+            // engine — invalid input must fail before any side
+            // effect (process spawn, task_id mint).
             let mut target_dir = cfg.download_dir.clone().unwrap_or_else(|| {
                 env::var("USERPROFILE")
                     .map(|u| format!("{}\\Downloads", u))
                     .unwrap_or_else(|_| ".".into())
             });
             // absDir may only name a dir the user physically picked
-            // in the OS folder dialog this session or earlier —
-            // anything else is an invented path and is rejected.
+            // in the OS folder dialog — anything else is an invented
+            // path and is rejected.
             if let Some(abs) = p.get("absDir").and_then(|v| v.as_str()) {
                 if abs.is_empty() || abs.len() > 1024
                     || abs.chars().any(|c| c.is_control())
@@ -671,12 +674,9 @@ fn handle(
                 }
                 let canon = std::fs::canonicalize(abs)
                     .map_err(|_| "picked folder not found".to_string())?;
-                // canonicalize yields \\?\ verbatim paths; picked
-                // dirs are stored stripped — compare like with like.
-                let canon_s = canon
-                    .to_string_lossy()
-                    .trim_start_matches(r"\\?\")
-                    .to_string();
+                // picked dirs are stored de-verbatimized — compare
+                // like with like.
+                let canon_s = deverbatim(&canon);
                 let inside = cfg.picked_dirs.iter().any(|d| {
                     std::path::Path::new(&canon_s)
                         .starts_with(std::path::Path::new(d))
@@ -692,6 +692,12 @@ fn handle(
                 std::fs::create_dir_all(&target_dir)
                     .map_err(|e| format!("cannot create subdir: {}", e))?;
             }
+
+            ensure_engine(engine, cfg, subs)?;
+            let task_id = format!("{:x}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0));
 
             let mut dto = Map::new();
             dto.insert("url".into(), json!(url));
@@ -857,11 +863,8 @@ fn handle(
             // Files the user chose to save outside downloadDir (via
             // the OS picker) stay openable — picked_dirs are the
             // only other allowed roots. picked_dirs are stored
-            // stripped, so compare against a de-verbatimized path.
-            let canon_s = canon_path
-                .to_string_lossy()
-                .trim_start_matches(r"\\?\")
-                .to_string();
+            // de-verbatimized, so compare like with like.
+            let canon_s = deverbatim(&canon_path);
             if !canon_path.starts_with(&canon_base)
                 && !cfg
                     .picked_dirs
@@ -873,10 +876,7 @@ fn handle(
             }
             // canonicalize yields \\?\ verbatim paths — explorer.exe
             // does not understand them, so strip the prefix.
-            let disp = canon_path
-                .to_string_lossy()
-                .trim_start_matches(r"\\?\")
-                .to_string();
+            let disp = deverbatim(&canon_path);
             let mut cmd = std::process::Command::new("explorer.exe");
             if msg.command == "reveal" {
                 cmd.arg(format!("/select,{}", disp));

@@ -104,7 +104,9 @@ async function notifyDone(name, outputPath) {
       ? [{ title: '파일 열기' }, { title: '폴더 열기' }]
       : [],
   }).catch((e) => console.warn('notify failed:', e));
-  setTimeout(() => notifPaths.delete(id), 10 * 60 * 1000);
+  // requireInteraction keeps the toast up indefinitely — the path
+  // map must outlive it or a late click does nothing.
+  setTimeout(() => notifPaths.delete(id), 24 * 60 * 60 * 1000);
 }
 
 // Body click = 파일 열기 (IDM opens the file on notification click).

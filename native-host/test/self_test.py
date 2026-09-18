@@ -99,6 +99,21 @@ check("traversal filename rejected", r.get("ok") is False, r)
 r = send(msg(4, "download", {"url": "http://x/\x00bad"}))
 check("control-char url rejected", r.get("ok") is False, r)
 
+# Target-dir validation runs before engine spawn — an absDir the
+# user never picked in the OS dialog must be rejected even though
+# no engine is configured.
+r = send(msg(84, "download", {
+    "url": "https://example.com/f.bin",
+    "absDir": "C:\\Windows"}))
+check("unpicked absDir rejected",
+      r.get("ok") is False and "not user-picked" in r.get("error", ""), r)
+
+r = send(msg(85, "download", {
+    "url": "https://example.com/f.bin",
+    "subdir": "..\\escape"}))
+check("traversal subdir rejected",
+      r.get("ok") is False and "subdir" in r.get("error", ""), r)
+
 r = send(msg(5, "exec", {"cmd": "calc"}))
 check("unknown command rejected", r.get("ok") is False, r)
 

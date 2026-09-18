@@ -30,8 +30,23 @@ async function sendBg(m) {
 // list flash. Rows are created once, then only their fields and
 // (on mode change) buttons are touched.
 const rows = new Map(); // taskId -> {div, idEl, bar, bytes, btns, mode}
+// Ids the engine once reported as unknown — dead stays dead, so
+// they never need re-probing. (A transient sendBg failure does NOT
+// go in here — the next pass retries it.)
+const deadIds = new Set();
+let refreshing = false;
 
 async function refresh() {
+  if (refreshing) return; // storage flushes can outpace the awaits
+  refreshing = true;
+  try {
+    await refreshOnce();
+  } finally {
+    refreshing = false;
+  }
+}
+
+async function refreshOnce() {
   const { enabled } = await chrome.storage.local.get({ enabled: true });
   $('#enabled').checked = enabled;
   try {
@@ -54,10 +69,14 @@ async function refresh() {
     // media tasks live in the coordinator — task.status doesn't know
     // them, so the liveness probe only applies to engine tasks.
     if (!dead && !t.media) {
-      try {
-        const r = await sendBg({ cmd: 'status', taskId: id });
-        if (r && r.known === false) dead = true;
-      } catch { dead = true; }
+      if (deadIds.has(id)) {
+        dead = true;
+      } else {
+        try {
+          const r = await sendBg({ cmd: 'status', taskId: id });
+          if (r && r.known === false) { dead = true; deadIds.add(id); }
+        } catch { dead = true; }
+      }
     }
     const label = dead && !terminal ? `${stLabel} — 종료됨` : stLabel;
     const pct = t.totalBytes ? Math.round(100 * (t.receivedBytes || 0) / t.totalBytes) : 0;

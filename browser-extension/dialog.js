@@ -83,11 +83,18 @@ async function init() {
     const ext = $('#ext').value.trim()
         .replace(/^\.+/, '').replace(/[\\/:*?"<>|.]/g, '');
     const stem = $('#filename').value.trim();
+    if (!stem) {
+      $('#err').textContent = '파일 이름을 입력하세요.';
+      return;
+    }
+    // Don't double up — 'a.mp4' + ext 'mp4' stays 'a.mp4'.
+    const already = ext
+        && stem.toLowerCase().endsWith(`.${ext.toLowerCase()}`);
     const r = await chrome.runtime.sendMessage({
       cmd: 'dialogDone',
       token,
       startNow,
-      filename: ext ? `${stem}.${ext}` : stem,
+      filename: !ext || already ? stem : `${stem}.${ext}`,
       subdir: pickedAbs ? undefined : (custom || sel.value),
       absDir: pickedAbs || undefined,
       maxConnections: Math.min(16, Math.max(1, +$('#conns').value || 8)),
