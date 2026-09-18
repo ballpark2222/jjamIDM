@@ -164,7 +164,10 @@ function ensurePort() {
         rec.outputPath = rec.metadata.outputPath;
       }
       const prev = tasks.get(id) || {};
-      boundedPut(tasks, id, { ...prev, ...rec }, TASK_CAP);
+      // File-task events carry no timestamp — stamp last-activity
+      // time so the options-page history can sort by recency.
+      boundedPut(tasks, id, { ...prev, ...rec, seenAt: Date.now() },
+          TASK_CAP);
       // File events carry `type`; media task snapshots carry `status`.
       const st = rec.status || rec.type;
       // A fresh attempt (resume/retry) clears the terminal flag so a
@@ -394,15 +397,20 @@ chrome.downloads.onCreated.addListener(async (item) => {
     if (!passesFilter(url, s)) return;
     await chrome.downloads.cancel(item.id);
     await chrome.downloads.erase({ id: item.id });
+    const fname = item.filename ? item.filename.split(/[\\/]/).pop()
+                                : undefined;
     const taskId = await requestDownload({
       url,
       referer: item.referrer,
-      filename: item.filename ? item.filename.split(/[\\/]/).pop() : undefined,
+      filename: fname,
       pageUrl: item.referrer,
     });
     if (taskId) {
+      // Seed with the display name + url so the history/options view
+      // has a real label before the engine's 'resolved' event lands.
       boundedPut(tasks, taskId,
-          { taskId, type: 'progress', receivedBytes: 0 }, TASK_CAP);
+          { taskId, type: 'progress', receivedBytes: 0,
+            fileName: fname, url, seenAt: Date.now() }, TASK_CAP);
     }
   } catch (e) {
     console.warn('capture failed, leaving browser download off', e);
@@ -544,6 +552,15 @@ chrome.runtime.onMessage.addListener((m, _s, send) => {
       // Popup open/reveal buttons — the host canonicalizes the path
       // and refuses anything outside downloadDir.
       send(await call(m.cmd, { path: m.path }));
+    } else if (m.cmd === 'clearHistory') {
+      // Options page clears only terminal records — in-flight tasks
+      // keep reporting and would resurrect anyway.
+      const TERM = ['completed', 'failed', 'cancelled'];
+      for (const [id, t] of tasks) {
+        if (TERM.includes(t.status || t.type)) tasks.delete(id);
+      }
+      flushTasksSoon();
+      send({ ok: true });
     // -- start-dialog round trip --
     } else if (m.cmd === 'pickFolder') {
       // OS picker can sit open while the user browses — the default

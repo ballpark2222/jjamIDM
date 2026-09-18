@@ -19,6 +19,26 @@
   button { padding: 8px 20px; background: #1565c0; color: #fff; border: 0;
            border-radius: 4px; font-size: 13px; cursor: pointer; }
   #saved { color: #2e7d32; font-size: 12px; margin-left: 10px; }
+  /* ---- history ---- */
+  #hist { max-height: 320px; overflow-y: auto; border: 1px solid #ddd;
+          border-radius: 4px; }
+  .hrow { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+          border-bottom: 1px solid #eee; font-size: 12px; }
+  .hrow:last-child { border-bottom: 0; }
+  .hdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .hdot.ok { background: #2e7d32; } .hdot.err { background: #c62828; }
+  .hdot.run { background: #1565c0; } .hdot.etc { background: #999; }
+  .hname { flex: 1; overflow: hidden; text-overflow: ellipsis;
+           white-space: nowrap; }
+  .hmeta { color: #888; flex: none; font-size: 11px; }
+  .hbtn { padding: 2px 8px; font-size: 11px; background: #eee;
+          color: #333; border-radius: 3px; }
+  .hbtn:hover { background: #ddd; }
+  #histEmpty { padding: 16px; color: #999; text-align: center;
+               font-size: 12px; }
+  #clearHist { background: #eee; color: #555; padding: 4px 12px;
+               font-size: 12px; }
+  #clearHist:hover { background: #e0e0e0; }
 </style>
 </head>
 <body>
@@ -45,6 +65,10 @@
 <div class="hint">이 확장자는 항상 브라우저가 받습니다</div>
 
 <p><button id="save">저장</button><span id="saved"></span></p>
+
+<h2>다운로드 기록</h2>
+<div id="hist"><div id="histEmpty">기록 없음</div></div>
+<p style="margin-top:8px"><button id="clearHist">기록 지우기</button></p>
 <script src="options.js"></script>
 </body>
 </html>
