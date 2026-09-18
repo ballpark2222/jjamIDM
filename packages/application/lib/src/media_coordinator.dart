@@ -573,6 +573,11 @@ final class MediaDownloadCoordinator {
   }
 
   void _fail(DownloadTask t, ErrorCode code, String detail) {
+    // ErrorCode alone is useless for diagnosis ('unknown' says
+    // nothing) — carry the detail in metadata so it reaches the
+    // task record, media.event snapshot, and the UI.
+    t = t.copyWith(
+        metadata: {...t.metadata, 'lastErrorDetail': detail});
     _apply(t, DownloadStatus.failed, lastError: code);
     _bus.publish(DownloadFailed(t.id, _clock().toUtc(), error: code));
   }

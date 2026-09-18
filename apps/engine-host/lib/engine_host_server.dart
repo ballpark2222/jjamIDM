@@ -239,13 +239,14 @@ final class EngineHostServer {
         final p = engine is BriskEngineAdapter
             ? (engine as BriskEngineAdapter).lastProgress(id)
             : null;
-        final st = scheduler?.task(id)?.status;
+        final st = scheduler?.task(id)?.status ??
+            // Media tasks live in the coordinator — without this the
+            // popup's liveness probe can't tell a stale 'resolving'
+            // snapshot from a live task and paints it forever.
+            media?.task(id)?.status;
         return {
           'known': _created.contains(taskId()) ||
               scheduler?.task(id) != null ||
-              // Media tasks live in the coordinator — without this
-              // a status probe reports an in-flight media download
-              // as unknown and clients mark it dead.
               media?.task(id) != null,
           if (st != null) 'status': st.name,
           if (p != null) 'receivedBytes': p.receivedBytes,
@@ -393,6 +394,9 @@ final class EngineHostServer {
               .timeout(const Duration(seconds: 5));
           await media?.flush().timeout(const Duration(seconds: 5));
         } catch (_) {}
+        // Kill tracked children — an exit mid-download would
+        // otherwise orphan yt-dlp/ffmpeg and they run forever.
+        ChildProcessRegistry.killAll();
         try {
           await _out.flush();
         } catch (_) {}

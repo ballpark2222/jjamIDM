@@ -38,7 +38,10 @@ final class EngineHostClient implements DownloadEngine {
     // fills the pipe buffer and deadlocks the child process.
     unawaited(proc.stderr.drain<void>());
     final lines = proc.stdout
-        .transform(utf8.decoder)
+        // allowMalformed: a non-UTF-8 byte from the engine (a stray
+        // localized print, a tool message) must not error the RPC
+        // channel — same class of guard as the JSON decode below.
+        .transform(const Utf8Decoder(allowMalformed: true))
         .transform(const LineSplitter())
         // A stray non-JSON stdout line (dependency print, partial
         // flush) must not error the stream — that would fire

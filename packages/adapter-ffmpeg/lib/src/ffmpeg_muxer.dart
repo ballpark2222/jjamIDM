@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:freedm_media_api/freedm_media_api.dart';
@@ -30,13 +31,17 @@ final class FfmpegMuxer implements MediaMuxer {
       mode: ProcessStartMode.normal,
       environment: environment,
     );
+    // Tracked so engine shutdown can kill the child — an orphaned
+    // ffmpeg keeps transcoding forever with no parent to stop it.
+    ChildProcessRegistry.track(proc);
     final out = StringBuffer();
     final err = StringBuffer();
+    // FFmpeg writes UTF-8; allowMalformed so a stray non-UTF-8 byte
+    // can't error the stream and kill the request zone.
+    const dec = Utf8Decoder(allowMalformed: true);
     final code = await Future.wait([
-      proc.stderr.transform(const SystemEncoding().decoder)
-          .forEach(err.write),
-      proc.stdout.transform(const SystemEncoding().decoder)
-          .forEach(out.write),
+      proc.stderr.transform(dec).forEach(err.write),
+      proc.stdout.transform(dec).forEach(out.write),
       proc.exitCode,
     ]).timeout(timeout, onTimeout: () {
       proc.kill(ProcessSignal.sigkill);

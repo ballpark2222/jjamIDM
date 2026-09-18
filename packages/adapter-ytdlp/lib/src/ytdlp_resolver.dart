@@ -40,11 +40,18 @@ final class YtDlpResolver implements MediaResolver {
       mode: ProcessStartMode.normal,
       environment: environment,
     );
+    // Tracked so engine shutdown can kill the child — a probe that
+    // outlives its parent is just wasted CPU forever.
+    ChildProcessRegistry.track(proc);
     final out = StringBuffer();
     final err = StringBuffer();
+    // allowMalformed: localized output can carry non-UTF-8 bytes on
+    // Windows (system codepage); a strict decode would error the
+    // stream and take the whole request down with it.
+    const dec = Utf8Decoder(allowMalformed: true);
     final done = await Future.wait([
-      proc.stdout.transform(utf8.decoder).forEach(out.write),
-      proc.stderr.transform(utf8.decoder).forEach(err.write),
+      proc.stdout.transform(dec).forEach(out.write),
+      proc.stderr.transform(dec).forEach(err.write),
       proc.exitCode,
     ]).timeout(timeout ?? this.timeout, onTimeout: () {
       proc.kill(ProcessSignal.sigkill);

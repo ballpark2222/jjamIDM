@@ -61,23 +61,31 @@ async function refreshOnce() {
   const seen = new Set();
   for (const [id, t] of Object.entries(tasks).slice(-15).reverse()) {
     seen.add(id);
-    const st = t.status || t.type || '?';
-    const terminal = ['completed', 'failed', 'cancelled'].includes(st);
-    const stLabel = LABELS[st] || st;
+    let st = t.status || t.type || '?';
+    let terminal = ['completed', 'failed', 'cancelled'].includes(st);
     // Engine was restarted → task unknown → controls can't work.
     let dead = terminal;
-    // media tasks live in the coordinator — task.status doesn't know
-    // them, so the liveness probe only applies to engine tasks.
-    if (!dead && !t.media) {
+    // Media events only flow while the popup is open, so a stale
+    // snapshot can sit at 'resolvingMedia' forever — the status
+    // probe (which now reaches the media coordinator too) is the
+    // only way such a row learns the task already ended.
+    if (!dead) {
       if (deadIds.has(id)) {
         dead = true;
       } else {
         try {
           const r = await sendBg({ cmd: 'status', taskId: id });
           if (r && r.known === false) { dead = true; deadIds.add(id); }
+          else if (r && r.status && r.status !== st) {
+            // Missed event — sync the row to the live status.
+            st = r.status;
+            terminal = ['completed', 'failed', 'cancelled'].includes(st);
+            dead = terminal;
+          }
         } catch { dead = true; }
       }
     }
+    const stLabel = LABELS[st] || st;
     const label = dead && !terminal ? `${stLabel} — 종료됨` : stLabel;
     const pct = t.totalBytes ? Math.round(100 * (t.receivedBytes || 0) / t.totalBytes) : 0;
     // Completed → open/reveal buttons (host validates the path is

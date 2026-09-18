@@ -8,6 +8,7 @@ import 'package:freedm_application/freedm_application.dart';
 import 'package:freedm_core_domain/freedm_core_domain.dart';
 import 'package:freedm_engine_host/engine_host_server.dart';
 import 'package:freedm_event_bus/freedm_event_bus.dart';
+import 'package:freedm_media_api/freedm_media_api.dart';
 import 'package:freedm_persistence/freedm_persistence.dart';
 
 /// freedm-engine-host entry point.
@@ -201,8 +202,12 @@ Future<void> main(List<String> args) async {
   // run state is gone after any restart.
   await media?.recover();
 
-  await server.run(
-      stdin.transform(utf8.decoder).transform(const LineSplitter()));
+  await server.run(stdin
+      // allowMalformed: one bad byte on the wire must not error the
+      // stream and take the engine down — the line then fails JSON
+      // decode and only that request errors.
+      .transform(const Utf8Decoder(allowMalformed: true))
+      .transform(const LineSplitter()));
   // stdin EOF = the control plane is gone. Land queued persistence
   // first (bounded — a wedged FS must not hang the exit), or a
   // transition in the final debounce window resurrects next launch.
@@ -215,6 +220,9 @@ Future<void> main(List<String> args) async {
   try {
     await _queueLock?.close();
   } catch (_) {}
+  // Kill tracked children — stdin EOF means the control plane is
+  // gone; orphaned yt-dlp/ffmpeg would run forever otherwise.
+  ChildProcessRegistry.killAll();
   // Without an explicit exit the event loop stays alive on open
   // engine sockets/isolates — an orphaned host keeps writing shared
   // segment temp files while the next launch's recovery

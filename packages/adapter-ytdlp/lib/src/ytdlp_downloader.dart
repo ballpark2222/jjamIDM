@@ -59,6 +59,9 @@ final class YtDlpDownloader implements ComponentDownloader {
       mode: ProcessStartMode.normal,
       environment: environment,
     );
+    // Tracked so engine shutdown can kill the child — otherwise an
+    // exit mid-download orphans it and it runs forever.
+    ChildProcessRegistry.track(proc);
     final timer = Timer(timeout, () => proc.kill(ProcessSignal.sigkill));
     // Pause/cancel lands here — the process dies but yt-dlp's
     // `.part` artifacts stay, so re-running the same args resumes.
@@ -72,13 +75,18 @@ final class YtDlpDownloader implements ComponentDownloader {
       }
     }
 
+    // allowMalformed: yt-dlp on Korean Windows can emit cp949-encoded
+    // bytes for localized titles. A strict utf8 decode throws into an
+    // unhandled stream error and kills the whole engine isolate —
+    // replacement chars are the only safe option here.
+    const dec = Utf8Decoder(allowMalformed: true);
     final subs = [
       proc.stdout
-          .transform(utf8.decoder)
+          .transform(dec)
           .transform(const LineSplitter())
           .listen(scan),
       proc.stderr
-          .transform(utf8.decoder)
+          .transform(dec)
           .transform(const LineSplitter())
           .listen(scan),
     ];
