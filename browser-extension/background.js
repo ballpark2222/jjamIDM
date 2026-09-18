@@ -483,6 +483,10 @@ chrome.runtime.onMessage.addListener((m, _s, send) => {
       send(await call(m.cmd, { taskId: m.taskId }));
     } else if (m.cmd === 'status') {
       send(await call('status', { taskId: m.taskId }));
+    } else if (m.cmd === 'open' || m.cmd === 'reveal') {
+      // Popup open/reveal buttons — the host canonicalizes the path
+      // and refuses anything outside downloadDir.
+      send(await call(m.cmd, { path: m.path }));
     // -- start-dialog round trip --
     } else if (m.cmd === 'dialogGet') {
       send(pendingDialog.get(m.token) || { error: 'expired' });

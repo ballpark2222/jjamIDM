@@ -56,6 +56,9 @@ async function refresh() {
     }
     const label = dead && !terminal ? `${stLabel} — 종료됨` : stLabel;
     const pct = t.totalBytes ? Math.round(100 * (t.receivedBytes || 0) / t.totalBytes) : 0;
+    // Completed → open/reveal buttons (host validates the path is
+    // under downloadDir, same as the notification buttons).
+    const openable = st === 'completed' && t.outputPath;
     div.innerHTML = `
       <div class="id">${id.slice(0, 12)}… — ${label}</div>
       <progress max="100" value="${pct}"></progress>
@@ -63,15 +66,23 @@ async function refresh() {
         ${dead ? '' : `
         <button data-a="pause">⏸</button>
         <button data-a="resume">▶</button>
-        <button data-a="cancel">✕</button>`}</div>`;
+        <button data-a="cancel">✕</button>`}
+        ${openable ? `
+        <button data-a="open">파일 열기</button>
+        <button data-a="reveal">폴더 열기</button>` : ''}</div>`;
     div.querySelectorAll('button').forEach((b) => {
       b.onclick = async () => {
+        const a = b.dataset.a;
+        if (a === 'open' || a === 'reveal') {
+          await sendBg({ cmd: a, path: t.outputPath });
+          return;
+        }
         // A parked (created/ready) task isn't paused — resume() is a
         // no-op on it; `start` admits it into the queue. Paused
         // (incl. media) tasks still go through resume.
-        const a = b.dataset.a === 'resume' &&
-            (st === 'created' || st === 'ready') ? 'start' : b.dataset.a;
-        await sendBg({ cmd: a, taskId: id });
+        const cmd = a === 'resume' &&
+            (st === 'created' || st === 'ready') ? 'start' : a;
+        await sendBg({ cmd, taskId: id });
       };
     });
     box.appendChild(div);
