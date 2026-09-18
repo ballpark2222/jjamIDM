@@ -152,6 +152,11 @@ Future<void> main(List<String> args) async {
         'ffmpeg=$ffmpeg) — media.* methods disabled');
   }
 
+  // One store for the process lifetime — the server mints refs on
+  // inbound headers and the scheduler resolves them at dispatch.
+  // Values never touch disk; a post-restart ref resolves anonymous
+  // and cookie-gated tasks fail honestly through the retry path.
+  final credentials = SessionCredentialResolver();
   DownloadScheduler? scheduler;
   if (queueDir != null) {
     // Two browsers (Chrome + Edge) each spawn their own native host,
@@ -188,6 +193,7 @@ Future<void> main(List<String> args) async {
       // Callers pass explicit taskIds; this only covers gaps.
       idGenerator: () => TaskId('q$stamp-${seq++}'),
       maxConcurrent: maxConcurrent,
+      credentials: credentials,
     );
     await scheduler.recover();
   }
@@ -197,7 +203,8 @@ Future<void> main(List<String> args) async {
   // only reach the client when the subscription already exists.
   final server = EngineHostServer(
       engine: engine, tempRoot: tempRoot,
-      media: media, scheduler: scheduler);
+      media: media, scheduler: scheduler,
+      credentials: credentials);
   // Mark interrupted media tasks regardless of queue mode — in-memory
   // run state is gone after any restart.
   await media?.recover();

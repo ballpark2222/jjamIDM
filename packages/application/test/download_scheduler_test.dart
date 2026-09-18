@@ -17,6 +17,7 @@ final class FakeEngine implements DownloadEngine {
   final paused = <String>[];
   final cancelled = <String>[];
   final speedLimits = <String, int?>{};
+  final requests = <String, DownloadRequest>{};
   bool supportsSpeedLimit;
   bool autoComplete;
 
@@ -60,6 +61,7 @@ final class FakeEngine implements DownloadEngine {
       throw StateError('engine spawn failed');
     }
     created.add(id.value);
+    requests[id.value] = request;
     controllers[id.value] = StreamController<EngineEvent>();
     return EngineTaskHandle(engineTaskId: id.value);
   }
@@ -204,6 +206,56 @@ void main() {
     await sub.cancel();
     return t;
   }
+
+  test('headersRef resolves to request headers at dispatch', () async {
+    // Regression: queue-mode tasks dropped the browser's cookie
+    // headers entirely — cookie-gated URLs then stalled on silent
+    // 403s. The resolver must hand the stored map to the engine.
+    final creds = SessionCredentialResolver();
+    final ref = creds.storeHeaders(const {'cookie': 'sid=42'});
+    final e = FakeEngine(autoComplete: true);
+    final s = DownloadScheduler(
+      engine: e,
+      repository: repo,
+      eventBus: bus,
+      idGenerator: nextId,
+      credentials: creds,
+    );
+    final t = await s.enqueue(DownloadRequest(
+      source: DownloadSource(
+          initialUrl: 'http://x/f.bin', headersRef: ref),
+      output: OutputSpec(targetDirectory: dir.path),
+    ));
+    await until(
+        s, t.id, (x) => x.status == DownloadStatus.completed);
+    expect(e.requests[t.id.value]?.headers, {'cookie': 'sid=42'});
+    await s.dispose();
+  });
+
+  test('dangling headersRef resolves anonymous (post-restart)',
+      () async {
+    // A ref minted by a previous engine process finds no store —
+    // dispatch still proceeds with empty headers rather than
+    // throwing, so the task can fail honestly downstream.
+    final e = FakeEngine(autoComplete: true);
+    final s = DownloadScheduler(
+      engine: e,
+      repository: repo,
+      eventBus: bus,
+      idGenerator: nextId,
+      credentials: SessionCredentialResolver(), // fresh, empty
+    );
+    final t = await s.enqueue(DownloadRequest(
+      source: DownloadSource(
+          initialUrl: 'http://x/f.bin',
+          headersRef: 'headers://old-process'),
+      output: OutputSpec(targetDirectory: dir.path),
+    ));
+    await until(
+        s, t.id, (x) => x.status == DownloadStatus.completed);
+    expect(e.requests[t.id.value]?.headers, isEmpty);
+    await s.dispose();
+  });
 
   test('autoStart:false parks the task; start() admits it', () async {
     final e = FakeEngine(autoComplete: true);

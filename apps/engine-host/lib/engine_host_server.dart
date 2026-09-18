@@ -24,6 +24,7 @@ final class EngineHostServer {
     required Directory tempRoot,
     this.media,
     this.scheduler,
+    this.credentials,
     IOSink? out,
   })  : _tempRoot = tempRoot,
         _out = out ?? stdout {
@@ -43,6 +44,13 @@ final class EngineHostServer {
   /// retry policy and restart recovery apply instead of the raw
   /// create+start passthrough the desktop control plane uses.
   final DownloadScheduler? scheduler;
+
+  /// Mints headers:// refs for inbound request headers — the task
+  /// record stores only the ref; values live in the resolver's
+  /// process memory until dispatch (and every retry) resolves them.
+  /// Without this, queue-mode downloads dropped the browser's
+  /// cookies entirely and cookie-gated URLs stalled on silent 403s.
+  final SessionCredentialResolver? credentials;
   final Directory _tempRoot;
   final IOSink _out;
 
@@ -112,6 +120,11 @@ final class EngineHostServer {
             originalPageUrl: d.pageUrl,
             referer: d.referer,
             userAgent: d.userAgent,
+            // Inline headers are transient by design — persist only
+            // a ref; the scheduler resolves it back to the same map
+            // at every dispatch/reattach inside this process.
+            headersRef:
+                d.headers.isEmpty ? null : credentials?.storeHeaders(d.headers),
           ),
           output: OutputSpec(
             targetDirectory: d.targetDirectory,
