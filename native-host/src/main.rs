@@ -548,6 +548,23 @@ fn validated_headers(p: &Map<String, Value>) -> Result<Map<String, Value>, Strin
     Ok(headers)
 }
 
+/// explorer.exe needs its switch args verbatim on the command
+/// line — its hand-rolled parser splits on spaces even inside
+/// Rust-quoted argv, so `cmd.arg("/select,C:\a b\f")` still breaks
+/// and Explorer falls back to Documents. raw_arg emits the
+/// documented `/select,"path"` form. Real paths can't contain a
+/// quote char on Windows, so no escaping is needed.
+#[cfg(windows)]
+fn explorer_arg(cmd: &mut Command, raw: String) {
+    use std::os::windows::process::CommandExt;
+    cmd.raw_arg(raw);
+}
+
+#[cfg(not(windows))]
+fn explorer_arg(cmd: &mut Command, raw: String) {
+    cmd.arg(raw); // explorer.exe only exists on Windows anyway
+}
+
 fn task_id_of(payload: &Map<String, Value>) -> Result<String, String> {
     let id = payload
         .get("taskId")
@@ -879,9 +896,13 @@ fn handle(
             let disp = deverbatim(&canon_path);
             let mut cmd = std::process::Command::new("explorer.exe");
             if msg.command == "reveal" {
-                cmd.arg(format!("/select,{}", disp));
+                // explorer's /select parser is hand-rolled and
+                // tokenizes on spaces even inside quoted argv —
+                // a spaced path falls back to Documents. Emit the
+                // documented form verbatim: /select,"C:\a b\f"
+                explorer_arg(&mut cmd, format!("/select,\"{}\"", disp));
             } else {
-                cmd.arg(&disp);
+                explorer_arg(&mut cmd, format!("\"{}\"", disp));
             }
             cmd.spawn().map_err(|e| format!("explorer: {}", e))?;
             Ok(json!({"ok": true}))
