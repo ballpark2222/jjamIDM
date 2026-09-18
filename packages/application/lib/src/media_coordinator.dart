@@ -316,6 +316,14 @@ final class MediaDownloadCoordinator {
       }
 
       task = _to(task, DownloadStatus.verifying);
+      // Record the delivered path — media.event carries only the
+      // TaskCodec snapshot, so this is the sole channel through
+      // which clients learn the real (collision-renamed) filename.
+      if (delivered != null) {
+        task = task.copyWith(
+            metadata: {...task.metadata, 'outputPath': delivered});
+        _tasks[task.id.value] = task;
+      }
       _apply(task, DownloadStatus.completed);
       _runs.remove(task.id.value);
       _bus.publish(DownloadCompleted(task.id, _clock().toUtc(),

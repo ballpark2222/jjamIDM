@@ -268,8 +268,12 @@ final class BriskEngineAdapter implements DownloadEngine {
     final fileName = request.output.fileName ??
         (info != null && info.fileName.isNotEmpty ? info.fileName : null) ??
         _fileNameFromUrl(request.source.effectiveUrl);
-    final filePath =
-        p.join(request.output.targetDirectory, fileName);
+    // Claim the final path up front — the `.part` staging name
+    // derives from it, so two same-named tasks must diverge before
+    // either starts writing, not just at the completion rename.
+    // The re-attach case (same uid) keeps its original claim.
+    final filePath = _claimUniqueTarget(
+        p.join(request.output.targetDirectory, fileName), uid);
 
     final item = brisk.DownloadItemModel(
       uid: uid,
@@ -562,6 +566,44 @@ final class BriskEngineAdapter implements DownloadEngine {
   @override
   bool isKnown(TaskId id) => _tasks.containsKey(id.value);
 
+  /// First `stem (N).ext` variant of [path] that isn't on disk and
+  /// isn't already claimed by another live task. [excludeUid] keeps
+  /// a re-attaching task from diverging off its own claim.
+  String _claimUniqueTarget(String path, String excludeUid) {
+    bool taken(String c) =>
+        File(c).existsSync() ||
+        _tasks.entries
+            .any((e) => e.key != excludeUid && e.value.finalPath == c);
+    if (!taken(path)) return path;
+    final dir = p.dirname(path);
+    final base = p.basename(path);
+    final dot = base.lastIndexOf('.');
+    final stem = dot > 0 ? base.substring(0, dot) : base;
+    final ext = dot > 0 ? base.substring(dot) : '';
+    for (var i = 1; i < 10000; i++) {
+      final cand = p.join(dir, '$stem ($i)$ext');
+      if (!taken(cand)) return cand;
+    }
+    return path;
+  }
+
+  /// First `stem (N).ext` variant of [path] that doesn't exist —
+  /// the plain path when it's free. Keeps concurrent same-named
+  /// downloads from clobbering each other's output.
+  static String _uniqueTarget(String path) {
+    if (!File(path).existsSync()) return path;
+    final dir = p.dirname(path);
+    final base = p.basename(path);
+    final dot = base.lastIndexOf('.');
+    final stem = dot > 0 ? base.substring(0, dot) : base;
+    final ext = dot > 0 ? base.substring(dot) : '';
+    for (var i = 1; i < 10000; i++) {
+      final cand = p.join(dir, '$stem ($i)$ext');
+      if (!File(cand).existsSync()) return cand;
+    }
+    return path; // absurd — fall back to the plain name
+  }
+
   // ------------------------------------------------------------------
 
   Map<String, String> _mergedHeaders(DownloadRequest request) {
@@ -588,15 +630,17 @@ final class BriskEngineAdapter implements DownloadEngine {
 
     if (msg.completionSignal ||
         status == brisk.DownloadStatus.assembleComplete) {
-      // Promote the .part staging file to its final name.
+      // Promote the .part staging file to its final name — picking
+      // `name (N).ext` when it's taken: deleting whatever sits at
+      // the target would silently destroy an earlier download (or
+      // any user file that happens to share the name).
       var outPath = item.filePath;
       try {
         final staging = File(outPath);
         if (staging.existsSync()) {
-          final target = File(t.finalPath);
-          if (target.existsSync()) target.deleteSync();
-          staging.renameSync(t.finalPath);
-          outPath = t.finalPath;
+          final dest = _uniqueTarget(t.finalPath);
+          staging.renameSync(dest);
+          outPath = dest;
         }
       } catch (_) {}
       t.events

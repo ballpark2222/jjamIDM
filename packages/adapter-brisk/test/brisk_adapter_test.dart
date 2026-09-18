@@ -117,6 +117,46 @@ void main() {
         await expectedHash(FixtureServer.defaultLength));
   });
 
+  test('two same-named concurrent downloads never share a staging '
+      'file or overwrite each other', () async {
+    // Both tasks ask for dup.bin — create() must claim divergent
+    // final paths up front or both would write the same `.part`
+    // staging file and the later rename would destroy the first
+    // output.
+    final engine = newEngine();
+    DownloadRequest named() => DownloadRequest(
+          source:
+              DownloadSource(initialUrl: '${srv.base}/file-range'),
+          output: OutputSpec(
+              targetDirectory: outDir.path, fileName: 'dup.bin'),
+        );
+    const a = TaskId('dup-a'), b = TaskId('dup-b');
+    await engine.create(a, named());
+    await engine.create(b, named());
+    final doneA = Completer<EngineEvent>(),
+        doneB = Completer<EngineEvent>();
+    engine.events(a).listen((e) {
+      if (e is EngineCompleted || e is EngineFailed) doneA.complete(e);
+    });
+    engine.events(b).listen((e) {
+      if (e is EngineCompleted || e is EngineFailed) doneB.complete(e);
+    });
+    await engine.start(a);
+    await engine.start(b);
+    final ea = await doneA.future.timeout(const Duration(minutes: 2));
+    final eb = await doneB.future.timeout(const Duration(minutes: 2));
+    expect(ea, isA<EngineCompleted>());
+    expect(eb, isA<EngineCompleted>());
+    final pa = (ea as EngineCompleted).outputPath!;
+    final pb = (eb as EngineCompleted).outputPath!;
+    expect(pa, isNot(pb));
+    expect(pa, endsWith('dup.bin'));
+    expect(pb, endsWith('dup (1).bin'));
+    final hash = await expectedHash(FixtureServer.defaultLength);
+    expect(sha256.convert(await File(pa).readAsBytes()).toString(), hash);
+    expect(sha256.convert(await File(pb).readAsBytes()).toString(), hash);
+  });
+
   test('pause then resume still completes',
       timeout: const Timeout(Duration(minutes: 3)), () async {
     final engine = newEngine();

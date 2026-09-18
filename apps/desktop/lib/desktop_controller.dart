@@ -112,7 +112,9 @@ final class DesktopController extends ChangeNotifier {
         (cls.needsResolver || _classifier.isManifest(uri!))) {
       // Media page → engine-host resolves + downloads + muxes.
       final id = await me.enqueueMedia(
-          pageUrl: url, targetDirectory: downloadDir);
+          pageUrl: url,
+          targetDirectory: downloadDir,
+          outputFileName: fileName);
       final now = DateTime.now().toUtc();
       final task = DownloadTask(
         id: id,

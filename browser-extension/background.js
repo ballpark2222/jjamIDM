@@ -142,6 +142,12 @@ function ensurePort() {
                          : { ...p };
       const id = rec.taskId || (rec.task && rec.task.id) || rec.id;
       if (!id) return;
+      // Media snapshots carry the delivered path under metadata —
+      // surface it so open/reveal and the popup see a real path.
+      if (rec.media && !rec.outputPath && rec.metadata &&
+          rec.metadata.outputPath) {
+        rec.outputPath = rec.metadata.outputPath;
+      }
       const prev = tasks.get(id) || {};
       boundedPut(tasks, id, { ...prev, ...rec }, TASK_CAP);
       // File events carry `type`; media task snapshots carry `status`.

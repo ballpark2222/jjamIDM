@@ -323,8 +323,14 @@ final class EngineHostClient implements DownloadEngine {
   @override
   Stream<EngineEvent> events(TaskId id) {
     if (_dead) return const Stream.empty();
-    final c = _taskEvents.putIfAbsent(
-        id.value, () => StreamController<EngineEvent>());
+    // A re-dispatch or pause→resume re-subscribes the same task id.
+    // The old controller is single-subscription and unlistened by
+    // then — reusing it throws StateError on .listen. Replace it:
+    // buffered events belonged to the cancelled subscription, and
+    // the host re-sends a status snapshot on task.subscribeEvents.
+    final prev = _taskEvents.remove(id.value);
+    if (prev != null && !prev.isClosed) unawaited(prev.close());
+    final c = _taskEvents[id.value] = StreamController<EngineEvent>();
     // Fire-and-forget subscribe so the host starts streaming. The
     // error is swallowed — a dead host already closed this stream
     // via _hostGone, and a live-host RPC failure is reported to the
