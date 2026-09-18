@@ -85,7 +85,9 @@ async function notify(title, message) {
 
 // IDM-style completion popup: buttons to open the file / its folder.
 // Chrome forbids opening real popups programmatically, so the
-// notification is the closest allowed surface.
+// notification is the closest allowed surface. requireInteraction
+// keeps it on screen until dismissed — a transient toast is gone
+// in seconds and reads as "no notification ever arrived".
 async function notifyDone(name, outputPath) {
   if (!(await getSettings()).notifications) return;
   const id = `done-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -95,12 +97,23 @@ async function notifyDone(name, outputPath) {
     iconUrl: 'icons/icon48.png',
     title: 'jjamIDM — 다운로드 완료',
     message: name,
+    requireInteraction: true,
+    priority: 2,
+    silent: false,
     buttons: outputPath
       ? [{ title: '파일 열기' }, { title: '폴더 열기' }]
       : [],
-  });
+  }).catch((e) => console.warn('notify failed:', e));
   setTimeout(() => notifPaths.delete(id), 10 * 60 * 1000);
 }
+
+// Body click = 파일 열기 (IDM opens the file on notification click).
+chrome.notifications.onClicked.addListener((id) => {
+  const path = notifPaths.get(id);
+  if (!path) return;
+  notifPaths.delete(id);
+  call('open', { path }).catch(() => {});
+});
 
 chrome.notifications.onButtonClicked.addListener((id, btn) => {
   const path = notifPaths.get(id);
