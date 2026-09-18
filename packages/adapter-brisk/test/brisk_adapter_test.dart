@@ -92,6 +92,41 @@ void main() {
     expect(p.fileName, endsWith('.mp4'));
   });
 
+  test('explicit bare fileName gains extension from content sniff',
+      () async {
+    // /file-magic-noext: HEAD 404, bare URL token, Content-Type
+    // lies (octet-stream) while the payload starts with an ftyp
+    // box — mirrors signed CDN video URLs. The explicit bare
+    // fileName keeps probe-name inference out of the picture:
+    // only the completion-time magic sniff can recover '.mp4'.
+    final engine = newEngine();
+    const id = TaskId('dl-magic');
+    await engine.create(
+        id,
+        DownloadRequest(
+          source: DownloadSource(
+              initialUrl: '${srv.base}/file-magic-noext'),
+          output: OutputSpec(
+              targetDirectory: outDir.path, fileName: 'cdnblob'),
+        ));
+    final done = Completer<EngineEvent>();
+    engine.events(id).listen((e) {
+      if (e is EngineCompleted || e is EngineFailed) done.complete(e);
+    });
+    await engine.start(id);
+    final e = await done.future.timeout(const Duration(minutes: 2));
+    expect(e, isA<EngineCompleted>(),
+        reason: (e is EngineFailed) ? '${e.detail}' : '');
+
+    final path = (e as EngineCompleted).outputPath!;
+    expect(path, endsWith('.mp4'));
+    final file = File(path);
+    expect(await file.length(), FixtureServer.defaultLength);
+    final head =
+        await file.openRead(0, 12).expand((c) => c).toList();
+    expect(head.sublist(4, 8), [0x66, 0x74, 0x79, 0x70]); // 'ftyp'
+  });
+
   test('capabilities', () async {
     final c = await newEngine().capabilities();
     expect(c.segmentedDownload, isTrue);

@@ -587,6 +587,81 @@ final class BriskEngineAdapter implements DownloadEngine {
     return path;
   }
 
+  /// 'name.ext' counts, bare 'name' and 'name.2' do not — a real
+  /// extension contains at least one letter.
+  static bool _hasExt(String path) =>
+      RegExp(r'\.[^./\\]*[a-zA-Z][^./\\]*$').hasMatch(p.basename(path));
+
+  /// Container/type signature of [f]'s first bytes → an extension.
+  /// Reads a small head buffer only; returns null for anything
+  /// unrecognized so genuinely extensionless payloads stay bare.
+  static String? _sniffExt(File f) {
+    List<int> head;
+    try {
+      final raf = f.openSync();
+      try {
+        head = raf.readSync(4096);
+      } finally {
+        raf.closeSync();
+      }
+    } catch (_) {
+      return null;
+    }
+    bool sig(int off, List<int> magic) {
+      if (off + magic.length > head.length) return false;
+      for (var i = 0; i < magic.length; i++) {
+        if (head[off + i] != magic[i]) return false;
+      }
+      return true;
+    }
+
+    if (sig(4, const [0x66, 0x74, 0x79, 0x70])) {
+      // ISO BMFF 'ftyp' — refine by major brand.
+      final brand = String.fromCharCodes(
+          head.sublist(8, head.length < 12 ? head.length : 12));
+      if (brand.startsWith('qt')) return 'mov';
+      if (brand.startsWith('M4A')) return 'm4a';
+      return 'mp4';
+    }
+    if (sig(0, const [0x1A, 0x45, 0xDF, 0xA3])) {
+      // EBML — the DocType string sits in the header.
+      return String.fromCharCodes(head).contains('webm')
+          ? 'webm'
+          : 'mkv';
+    }
+    if (sig(0, const [0x4F, 0x67, 0x67, 0x53])) return 'ogg';
+    if (sig(0, const [0x49, 0x44, 0x33]) ||
+        (head.length > 1 &&
+            head[0] == 0xFF &&
+            (head[1] & 0xE0) == 0xE0)) {
+      return 'mp3';
+    }
+    if (sig(0, const [0x66, 0x4C, 0x61, 0x43])) return 'flac';
+    if (sig(0, const [0x52, 0x49, 0x46, 0x46])) {
+      if (sig(8, const [0x57, 0x41, 0x56, 0x45])) return 'wav';
+      if (sig(8, const [0x57, 0x45, 0x42, 0x50])) return 'webp';
+      if (sig(8, const [0x41, 0x56, 0x49, 0x20])) return 'avi';
+    }
+    if (sig(0, const [0x89, 0x50, 0x4E, 0x47])) return 'png';
+    if (sig(0, const [0xFF, 0xD8, 0xFF])) return 'jpg';
+    if (sig(0, const [0x47, 0x49, 0x46, 0x38])) return 'gif';
+    if (sig(0, const [0x46, 0x4C, 0x56])) return 'flv';
+    if (sig(0, const [0x30, 0x26, 0xB2, 0x75])) return 'wmv';
+    if (sig(0, const [0x25, 0x50, 0x44, 0x46])) return 'pdf';
+    if (sig(0, const [0x50, 0x4B, 0x03, 0x04])) return 'zip';
+    if (sig(0, const [0x52, 0x61, 0x72, 0x21])) return 'rar';
+    if (sig(0, const [0x37, 0x7A, 0xBC, 0xAF])) return '7z';
+    if (sig(0, const [0x4D, 0x5A])) return 'exe';
+    if (sig(0, const [0x23, 0x45, 0x58, 0x54, 0x4D, 0x33, 0x55])) {
+      return 'm3u8';
+    }
+    // MPEG-TS — 0x47 sync byte repeats every 188 bytes.
+    if (head.length > 189 && head[0] == 0x47 && head[188] == 0x47) {
+      return 'ts';
+    }
+    return null;
+  }
+
   /// First `stem (N).ext` variant of [path] that doesn't exist —
   /// the plain path when it's free. Keeps concurrent same-named
   /// downloads from clobbering each other's output.
@@ -638,7 +713,17 @@ final class BriskEngineAdapter implements DownloadEngine {
       try {
         final staging = File(outPath);
         if (staging.existsSync()) {
-          final dest = _uniqueTarget(t.finalPath);
+          // Bare target (CDN hash name, or a dialog/fileName that
+          // carried no extension): sniff the payload's magic bytes
+          // for a container signature. A file named 'clip' with no
+          // extension won't open on double-click — IDM-style type
+          // recovery happens here, where the bytes are known.
+          var desired = t.finalPath;
+          if (!_hasExt(desired)) {
+            final ext = _sniffExt(staging);
+            if (ext != null) desired = '$desired.$ext';
+          }
+          final dest = _uniqueTarget(desired);
           staging.renameSync(dest);
           outPath = dest;
         }

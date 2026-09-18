@@ -142,6 +142,18 @@ final class FixtureServer {
               length: defaultLength,
               ranges: true,
               contentType: ContentType('video', 'mp4'));
+        case '/file-magic-noext':
+          // Signed-CDN shape taken one step further: HEAD rejected,
+          // extensionless token, Content-Type lies (octet-stream)
+          // while the payload is actually MP4 — only content
+          // sniffing at completion can recover the extension.
+          if (req.method == 'HEAD') {
+            return _deny(res, HttpStatus.notFound);
+          }
+          return await _serveFile(req,
+              length: defaultLength,
+              ranges: true,
+              head: _mp4Head);
         case '/file-changing-etag':
           return await _serveFile(req,
               length: defaultLength,
@@ -175,6 +187,14 @@ final class FixtureServer {
     res.close();
   }
 
+  /// Leading bytes of a minimal ISO-BMFF file — 'ftyp' box at the
+  /// canonical offset so magic-byte sniffers see a real MP4.
+  static const _mp4Head = [
+    0x00, 0x00, 0x00, 0x18, // box size
+    0x66, 0x74, 0x79, 0x70, // 'ftyp'
+    0x69, 0x73, 0x6F, 0x6D, // major brand 'isom'
+  ];
+
   Future<void> _serveFile(
     HttpRequest req, {
     required int length,
@@ -183,6 +203,7 @@ final class FixtureServer {
     int chunkDelay = 0,
     String? etag,
     ContentType? contentType,
+    List<int>? head,
   }) async {
     final res = req.response;
     res.headers.set('etag', etag ?? '"fixture-$seed-$length"');
@@ -219,7 +240,14 @@ final class FixtureServer {
     var off = start;
     while (off <= end) {
       final n = min(chunk, end - off + 1);
-      res.add(fixtureRange(off, n, seed: seed));
+      // Position-stable body: [head] overrides the leading
+      // positions, every other byte follows fixtureByteAt(i) so
+      // Range slices stay consistent across segments.
+      res.add(List<int>.generate(n, (j) {
+        final i = off + j;
+        if (head != null && i < head.length) return head[i];
+        return fixtureByteAt(i, seed: seed);
+      }));
       if (chunkDelay > 0) {
         await res.flush();
         await Future<void>.delayed(Duration(milliseconds: chunkDelay));
