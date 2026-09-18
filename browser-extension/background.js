@@ -178,6 +178,10 @@ function ensurePort() {
           rec.metadata.outputPath) {
         rec.outputPath = rec.metadata.outputPath;
       }
+      if (rec.media && !rec.lastErrorDetail && rec.metadata &&
+          rec.metadata.lastErrorDetail) {
+        rec.lastErrorDetail = rec.metadata.lastErrorDetail;
+      }
       const prev = tasks.get(id) || {};
       // File-task events carry no timestamp — stamp last-activity
       // time so the options-page history can sort by recency.

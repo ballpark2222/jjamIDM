@@ -119,6 +119,14 @@ async function renderHistory() {
           hour: '2-digit', minute: '2-digit' }) : '';
     meta.textContent =
         `${STATUS_LABELS[st] || st} · ${fmtBytes(size)} · ${when}`;
+    // Why it failed — the stored ErrorCode alone ('unknown') tells
+    // the user nothing; the engine's detail does.
+    const why = st === 'failed' &&
+        (t.lastErrorDetail || (t.metadata && t.metadata.lastErrorDetail));
+    if (why) {
+      meta.textContent = `${STATUS_LABELS[st]} · ${why}`;
+      meta.title = `${t.error || t.lastError || ''} — ${why}`;
+    }
 
     row.append(dot, name, meta);
     if (st === 'completed' && t.outputPath) {

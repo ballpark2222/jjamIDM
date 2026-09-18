@@ -244,11 +244,14 @@ final class EngineHostServer {
             // popup's liveness probe can't tell a stale 'resolving'
             // snapshot from a live task and paints it forever.
             media?.task(id)?.status;
+        final detail = scheduler?.task(id)?.metadata['lastErrorDetail'] ??
+            media?.task(id)?.metadata['lastErrorDetail'];
         return {
           'known': _created.contains(taskId()) ||
               scheduler?.task(id) != null ||
               media?.task(id) != null,
           if (st != null) 'status': st.name,
+          if (detail != null) 'lastErrorDetail': detail,
           if (p != null) 'receivedBytes': p.receivedBytes,
           if (p?.totalBytes != null) 'totalBytes': p!.totalBytes,
           if (p?.speedBytesPerSecond != null)
@@ -466,6 +469,8 @@ final class EngineHostServer {
             if (outPath != null) 'outputPath': outPath,
             if (t.lastError != ErrorCode.none)
               'error': t.lastError.name,
+            if (t.metadata['lastErrorDetail'] != null)
+              'lastErrorDetail': t.metadata['lastErrorDetail'],
           },
         ).encode());
       }

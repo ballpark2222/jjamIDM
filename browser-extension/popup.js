@@ -86,7 +86,10 @@ async function refreshOnce() {
       }
     }
     const stLabel = LABELS[st] || st;
-    const label = dead && !terminal ? `${stLabel} — 종료됨` : stLabel;
+    const why = st === 'failed' &&
+        (t.lastErrorDetail || (t.metadata && t.metadata.lastErrorDetail));
+    const label = dead && !terminal ? `${stLabel} — 종료됨`
+        : (why ? `${stLabel} — ${String(why).slice(0, 80)}` : stLabel);
     const pct = t.totalBytes ? Math.round(100 * (t.receivedBytes || 0) / t.totalBytes) : 0;
     // Completed → open/reveal buttons (host validates the path is
     // under downloadDir, same as the notification buttons).
