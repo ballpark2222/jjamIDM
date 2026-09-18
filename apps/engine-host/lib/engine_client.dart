@@ -247,11 +247,14 @@ final class EngineHostClient implements DownloadEngine {
 
   /// Probe a media page. Returns null when the host can't serve
   /// media (v1 host or missing tools).
-  Future<Map<String, Object?>?> probeMedia(String pageUrl) async {
+  Future<Map<String, Object?>?> probeMedia(String pageUrl,
+      {Map<String, String> headers = const {}}) async {
     if (!supportsMedia) return null;
     try {
-      return await _call(
-          EngineProtocol.mediaProbe, {'pageUrl': pageUrl});
+      return await _call(EngineProtocol.mediaProbe, {
+        'pageUrl': pageUrl,
+        if (headers.isNotEmpty) 'headers': headers,
+      });
     } on StateError {
       return null;
     }

@@ -28,6 +28,7 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "ping",
     "download",
     "media",
+    "mediaProbe",
     "start",
     "pause",
     "resume",
@@ -779,6 +780,27 @@ fn handle(
             }
             Ok(json!({"taskId": task_id}))
         }
+        "mediaProbe" => {
+            // Format chooser — returns the resolver's normalized
+            // format/subtitle list so the extension dialog can offer
+            // real qualities (1080p/720p/…) instead of guessing.
+            let p = &msg.payload;
+            let url = p
+                .get("pageUrl")
+                .or_else(|| p.get("url"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            validate_url(url)?;
+            let headers = validated_headers(&msg.payload)?;
+            ensure_engine(engine, cfg, subs)?;
+            let mut params = Map::new();
+            params.insert("pageUrl".into(), json!(url));
+            if !headers.is_empty() {
+                params.insert("headers".into(), Value::Object(headers));
+            }
+            let r = engine_call(engine, "media.probe", params)?;
+            Ok(r)
+        }
         "media" => {
             // Media page → host-side media pipeline (yt-dlp + FFmpeg
             // live inside engine-host; browser never picks paths).
@@ -795,6 +817,25 @@ fn handle(
             params.insert("pageUrl".into(), json!(url));
             if !headers.is_empty() {
                 params.insert("headers".into(), Value::Object(headers));
+            }
+            // Quality chooser fields — absent means "best" (yt-dlp
+            // default), same as before the picker existed.
+            for k in ["videoFormatId", "audioFormatId", "outputFileName"] {
+                if let Some(v) = p.get(k).and_then(|v| v.as_str()) {
+                    if !v.is_empty() {
+                        params.insert(k.into(), json!(v));
+                    }
+                }
+            }
+            if let Some(langs) = p.get("subtitleLangs").and_then(|v| v.as_array()) {
+                let list: Vec<Value> = langs
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| json!(s))
+                    .collect();
+                if !list.is_empty() {
+                    params.insert("subtitleLangs".into(), Value::Array(list));
+                }
             }
             params.insert(
                 "targetDirectory".into(),

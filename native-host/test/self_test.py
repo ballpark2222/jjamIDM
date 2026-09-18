@@ -143,6 +143,22 @@ check("status lazy-spawns engine",
       r.get("ok") is False and "engine" in r.get("error", "")
       and "not allowed" not in r.get("error", ""), r)
 
+# mediaProbe (quality chooser) must reach the media-probe arm —
+# URL validation passes, then spawn fails on missing engineCommand.
+r = send(msg(84, "mediaProbe", {"pageUrl": "http://localhost:9/v"}))
+check("mediaProbe reaches probe arm",
+      r.get("ok") is False and "engine" in r.get("error", "")
+      and "not allowed" not in r.get("error", ""), r)
+# media enqueue forwards quality-picker fields — same spawn point.
+r = send(msg(85, "media", {"pageUrl": "http://localhost:9/v",
+                           "videoFormatId": "22",
+                           "audioFormatId": "140",
+                           "subtitleLangs": ["ko"],
+                           "outputFileName": "clip"}))
+check("media reaches enqueue arm with selection fields",
+      r.get("ok") is False and "engine" in r.get("error", "")
+      and "not allowed" not in r.get("error", ""), r)
+
 # oversize frame → channel must die (host exits on the length header,
 # so even the body write can hit a closed pipe — that is the pass)
 big = msg(9, "ping", {"pad": "x" * (2 << 20)})

@@ -262,6 +262,8 @@ async function sendToFreeDM({
 
 // Media page (YouTube watch etc.) → host-side media pipeline.
 // The engine resolves formats with yt-dlp and muxes with FFmpeg.
+// Opens the quality chooser first — the dialog probes the page's
+// formats and submits the pick back via mediaDone.
 async function sendMediaToFreeDM(pageUrl) {
   // Login-gated media needs the browser's session — forward cookies,
   // UA and Referer like a file download does.
@@ -270,10 +272,47 @@ async function sendMediaToFreeDM(pageUrl) {
   if (cookie) headers.cookie = cookie;
   headers['user-agent'] = navigator.userAgent;
   headers['referer'] = pageUrl;
-  const res = await call('media', { pageUrl, headers });
-  notify('jjamIDM — 미디어 다운로드 시작', pageUrl);
-  return res.taskId;
+  openMediaDialog({ pageUrl, headers });
 }
+
+// ---- media quality dialog -------------------------------------------
+// Same token pattern as the file dialog: the pageUrl+headers ride in
+// pendingMedia so the dialog window only ever sees the page URL —
+// cookies stay in the background worker.
+const pendingMedia = new Map(); // token -> {pageUrl, headers}
+const mediaWins = new Map();    // windowId -> token
+
+function openMediaDialog(req) {
+  const token = `m${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  pendingMedia.set(token, req);
+  chrome.windows.create({
+    url: `media_dialog.html#${token}`,
+    type: 'popup',
+    width: 560,
+    height: 520,
+    focused: true,
+  }).then((w) => {
+    if (!w || w.id == null) return;
+    mediaWins.set(w.id, token);
+    chrome.windows.get(w.id).catch(() => mediaClosed(w.id));
+  }).catch(() => {
+    // Window couldn't open — fall back to best-quality enqueue so
+    // the click isn't silently lost.
+    pendingMedia.delete(token);
+    call('media', { pageUrl: req.pageUrl, headers: req.headers })
+        .then(() => notify('jjamIDM — 미디어 다운로드 시작', req.pageUrl))
+        .catch(() => {});
+  });
+}
+
+function mediaClosed(winId) {
+  const token = mediaWins.get(winId);
+  if (!token) return;
+  mediaWins.delete(winId);
+  pendingMedia.delete(token);
+}
+
+chrome.windows.onRemoved.addListener(mediaClosed);
 
 async function enabled() {
   const s = await chrome.storage.local.get({ enabled: true });
@@ -543,6 +582,38 @@ chrome.runtime.onMessage.addListener((m, _s, send) => {
         boundedAdd(captureFailed, req.url, SET_CAP);
         chrome.downloads.download({ url: req.url }).catch(() => {});
       }
+      send({ ok: true });
+    // -- media quality dialog --
+    } else if (m.cmd === 'mediaDialogGet') {
+      const req = pendingMedia.get(m.token);
+      send(req ? { pageUrl: req.pageUrl } : { error: 'expired' });
+    } else if (m.cmd === 'mediaProbe') {
+      const req = pendingMedia.get(m.token);
+      if (!req) return send({ error: 'expired' });
+      // yt-dlp resolution can take tens of seconds on a slow
+      // connection — well past the default 30s host timeout.
+      try {
+        send(await call('mediaProbe',
+            { pageUrl: req.pageUrl, headers: req.headers }, 90000));
+      } catch (e) { send({ error: String(e) }); }
+    } else if (m.cmd === 'mediaDone') {
+      const req = pendingMedia.get(m.token);
+      pendingMedia.delete(m.token);
+      if (!req) return send({ error: 'expired' });
+      try {
+        await call('media', {
+          pageUrl: req.pageUrl,
+          headers: req.headers,
+          videoFormatId: m.videoFormatId,
+          audioFormatId: m.audioFormatId,
+          subtitleLangs: m.subtitleLangs,
+          outputFileName: m.outputFileName,
+        });
+        notify('jjamIDM — 미디어 다운로드 시작', req.pageUrl);
+        send({ ok: true });
+      } catch (e) { send({ error: String(e) }); }
+    } else if (m.cmd === 'mediaCancel') {
+      pendingMedia.delete(m.token);
       send({ ok: true });
     // -- floating video chip --
     } else if (m.type === 'jjamidm-video') {

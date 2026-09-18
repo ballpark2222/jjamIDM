@@ -271,10 +271,15 @@ final class EngineHostServer {
         if (m == null) {
           throw UnsupportedError('media pipeline not configured');
         }
-        final p = await m.probe(req.params['pageUrl'] as String);
+        final p = await m.probe(req.params['pageUrl'] as String,
+            headers: (req.params['headers'] as Map?)
+                    ?.cast<String, String>() ??
+                const {});
         return {
           'supported': p.supported,
           'title': p.title,
+          'durationSeconds': p.durationSeconds,
+          'webpageUrl': p.webpageUrl,
           'formats': [
             for (final f in p.formats)
               {
@@ -283,9 +288,17 @@ final class EngineHostServer {
                 'hasVideo': f.hasVideo,
                 'hasAudio': f.hasAudio,
                 'filesizeBytes': f.filesizeBytes,
+                'bitrateKbps': f.bitrateKbps,
                 'height': f.height,
+                'width': f.width,
+                'protocol': f.protocol,
+                'label': f.label,
                 'url': f.url,
               },
+          ],
+          'subtitles': [
+            for (final s in p.subtitles)
+              {'lang': s.lang, 'ext': s.ext},
           ],
         };
 

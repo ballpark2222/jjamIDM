@@ -82,6 +82,19 @@ void main() {
         .probeMedia('${fixture.base}/hls/master.m3u8');
     expect(probe, isNotNull);
     expect(probe!['supported'], isTrue);
+    // The quality picker rides on these fields — the wire shape
+    // must keep carrying them for the dialog to render.
+    expect(probe['formats'], isA<List>());
+    expect(probe.containsKey('subtitles'), isTrue);
+
+    // Picker flow: probe → choose a real formatId → enqueue with it.
+    // Prefer a video format like the dialog does; an empty list
+    // just means "best" — both are legal paths.
+    final formats = probe['formats'] as List;
+    final pick = formats.whereType<Map>().firstWhere(
+        (f) => f['hasVideo'] == true,
+        orElse: () => const <String, Object?>{});
+    final sel = pick['formatId'] as String?;
 
     final done = Completer<DownloadTask>();
     final sub = client!.mediaTasks.listen((t) {
@@ -98,6 +111,7 @@ void main() {
     final id = await client!.enqueueMedia(
       pageUrl: '${fixture.base}/hls/master.m3u8',
       targetDirectory: outDir.path,
+      videoFormatId: sel,
     );
     expect(id.value, isNotEmpty);
 
