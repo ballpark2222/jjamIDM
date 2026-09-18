@@ -160,6 +160,46 @@ $('#opts').onclick = (e) => {
   e.preventDefault();
   chrome.runtime.openOptionsPage();
 };
+
+// ---- per-site exclusion -----------------------------------------------
+// "이 사이트에서 사용 안 함" — toggles the active tab's hostname in
+// settings.excludedSites; content.js + capture gate read the same
+// list so the effect is immediate (no reload needed).
+let siteHost = null;
+const hostListed = (list, host) =>
+  list.some((d) => host === d || host.endsWith('.' + d));
+const siteList = (s) =>
+  (s.excludedSites || '').split(',')
+      .map((x) => x.trim().toLowerCase()).filter(Boolean);
+
+chrome.tabs.query({ active: true, currentWindow: true }, async ([tab]) => {
+  try {
+    const u = new URL(tab && tab.url || '');
+    if (!/^https?:$/.test(u.protocol)) return;
+    siteHost = u.hostname.toLowerCase();
+    const { settings } = await chrome.storage.local.get({ settings: {} });
+    $('#siteLabel').textContent = `${siteHost}에서 사용 안 함`;
+    $('#siteOff').checked = hostListed(siteList(settings), siteHost);
+    $('#siteRow').style.display = '';
+  } catch { /* non-http tab — hide the row */ }
+});
+
+$('#siteOff').onchange = async (e) => {
+  if (!siteHost) return;
+  const { settings } = await chrome.storage.local.get({ settings: {} });
+  const s = { ...settings };
+  let list = siteList(s);
+  if (e.target.checked) {
+    if (!list.includes(siteHost)) list.push(siteHost);
+  } else {
+    // Removing 'youtube.com' must also unblock a 'www.' host it
+    // previously covered, not just an exact entry.
+    list = list.filter(
+        (d) => !(siteHost === d || siteHost.endsWith('.' + d)));
+  }
+  s.excludedSites = list.join(',');
+  await chrome.storage.local.set({ settings: s });
+};
 chrome.storage.onChanged.addListener(refresh);
 refresh();
 setInterval(refresh, 3000);

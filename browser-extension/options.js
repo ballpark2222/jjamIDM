@@ -10,6 +10,7 @@ const DEFAULTS = {
   captureFilter: '',
   excludeFilter: '',
   typeFolders: '',
+  excludedSites: '',
 };
 
 async function load() {
@@ -22,6 +23,7 @@ async function load() {
   $('#typeFolders').value = s.typeFolders;
   $('#captureFilter').value = s.captureFilter;
   $('#excludeFilter').value = s.excludeFilter;
+  $('#excludedSites').value = s.excludedSites;
 }
 
 $('#save').onclick = async () => {
@@ -33,6 +35,7 @@ $('#save').onclick = async () => {
     captureFilter: $('#captureFilter').value.trim(),
     excludeFilter: $('#excludeFilter').value.trim(),
     typeFolders: $('#typeFolders').value.trim(),
+    excludedSites: $('#excludedSites').value.trim(),
   };
   await chrome.storage.local.set({ settings });
   $('#saved').textContent = '저장됨';

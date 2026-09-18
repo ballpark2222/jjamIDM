@@ -35,6 +35,7 @@ const SETTING_DEFAULTS = {
   captureFilter: '',
   excludeFilter: '',
   typeFolders: '',
+  excludedSites: '',
 };
 async function getSettings() {
   const { settings } = await chrome.storage.local.get({ settings: {} });
@@ -60,6 +61,20 @@ function passesFilter(url, s) {
   if (exc.has(ext)) return false;
   if (inc.size && !inc.has(ext)) return false;
   return true;
+}
+
+// Site exclusion: exact host or any subdomain of a listed domain.
+// Applies to the page that triggered the download AND the file
+// host itself — either match means "don't touch this one".
+function siteBlocked(url, s) {
+  let host;
+  try { host = new URL(url).hostname.toLowerCase(); }
+  catch { return false; }
+  if (!host) return false;
+  for (const d of parseExtList(s.excludedSites)) {
+    if (host === d || host.endsWith('.' + d)) return true;
+  }
+  return false;
 }
 
 // Type → subfolder routing ("mp4,mkv=비디오" lines → '비디오').
@@ -395,6 +410,10 @@ chrome.downloads.onCreated.addListener(async (item) => {
     if (captureFailed.has(url) || captureFailed.has(item.url)) return;
     const s = await getSettings();
     if (!passesFilter(url, s)) return;
+    // Per-site opt-out — the page that triggered it, or the file
+    // host itself, is on the user's never-capture list.
+    if (siteBlocked(item.referrer || '', s) ||
+        siteBlocked(item.finalUrl || item.url || '', s)) return;
     await chrome.downloads.cancel(item.id);
     await chrome.downloads.erase({ id: item.id });
     const fname = item.filename ? item.filename.split(/[\\/]/).pop()

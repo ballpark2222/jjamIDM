@@ -9,12 +9,25 @@
   if (window.__jjamidmContentLoaded) return;
   window.__jjamidmContentLoaded = true;
 
+  // Per-site opt-out: the popup/options exclusion list gates the
+  // floating chip the same way the global toggle does.
+  function hostExcluded(listStr) {
+    const h = location.hostname.toLowerCase();
+    return (listStr || '').split(',')
+      .map((x) => x.trim().toLowerCase()).filter(Boolean)
+      .some((d) => h === d || h.endsWith('.' + d));
+  }
   let floatingOn = true;
-  chrome.storage.local.get({ settings: {} }).then(({ settings }) => {
-    if (settings.floatingButton === false) floatingOn = false;
-  });
+  let siteExcluded = false;
+  function applySettings(s) {
+    floatingOn = s.floatingButton !== false;
+    siteExcluded = hostExcluded(s.excludedSites);
+    if (siteExcluded) chip.style.display = 'none';
+  }
+  chrome.storage.local.get({ settings: {} })
+      .then(({ settings }) => applySettings(settings));
   chrome.storage.onChanged.addListener((chg) => {
-    if (chg.settings) floatingOn = chg.settings.newValue?.floatingButton !== false;
+    if (chg.settings) applySettings(chg.settings.newValue || {});
   });
 
   // ---- floating chip ------------------------------------------------
@@ -70,7 +83,10 @@
     const now = Date.now();
     if (now - lastMove < 120) return; // ~8fps hit-test is plenty
     lastMove = now;
-    if (!floatingOn) { chip.style.display = 'none'; return; }
+    if (!floatingOn || siteExcluded) {
+      chip.style.display = 'none';
+      return;
+    }
     let hit = null;
     for (const el of media) {
       if (!el.isConnected) { media.delete(el); continue; }
