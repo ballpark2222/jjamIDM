@@ -43,7 +43,7 @@ void main() {
     final p = await resolver.probe('http://fixture/v');
     expect(p.supported, isTrue);
     expect(p.title, 'Fixture Video');
-    expect(p.formats.length, 4);
+    expect(p.formats.length, 5);
     final p360 = p.formats.firstWhere((f) => f.formatId == 'p360');
     expect(p360.hasAudio, isTrue);
     expect(p360.hasVideo, isTrue);
@@ -95,6 +95,35 @@ void main() {
     final step = plan.steps.single;
     expect(step, isA<ComponentDownloadStep>());
     expect((step as ComponentDownloadStep).formatId, 'v720+a128');
+  });
+
+  test('plan: http_dash_segments never becomes an engine step',
+      () async {
+    // startsWith('http') matched this protocol — the engine would
+    // have downloaded the manifest/fragment base as the "video".
+    final plan = await resolver.plan(const MediaSelection(
+      pageUrl: 'http://fixture/v',
+      videoFormatId: 'd720',
+    ));
+    expect(plan.steps.single, isA<ComponentDownloadStep>());
+  });
+
+  test('plan: selected subtitles emit engine subtitle steps on the '
+      'progressive path', () async {
+    final plan = await resolver.plan(const MediaSelection(
+      pageUrl: 'http://fixture/v',
+      videoFormatId: 'p360',
+      subtitleLangs: ['en', 'ko', 'fr'],
+    ));
+    // video + 2 sub steps; 'fr' has no track in the probe.
+    expect(plan.steps.length, 3);
+    final subs = plan.steps
+        .whereType<EngineDownloadStep>()
+        .where((s) => s.role == 'subtitle')
+        .toList();
+    expect(subs.length, 2);
+    expect(subs.map((s) => s.url).toSet(),
+        {'http://x/en.vtt', 'http://x/ko.vtt'});
   });
 
   test('version probe', () async {

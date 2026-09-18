@@ -242,7 +242,11 @@ final class EngineHostServer {
         final st = scheduler?.task(id)?.status;
         return {
           'known': _created.contains(taskId()) ||
-              scheduler?.task(id) != null,
+              scheduler?.task(id) != null ||
+              // Media tasks live in the coordinator — without this
+              // a status probe reports an in-flight media download
+              // as unknown and clients mark it dead.
+              media?.task(id) != null,
           if (st != null) 'status': st.name,
           if (p != null) 'receivedBytes': p.receivedBytes,
           if (p?.totalBytes != null) 'totalBytes': p!.totalBytes,

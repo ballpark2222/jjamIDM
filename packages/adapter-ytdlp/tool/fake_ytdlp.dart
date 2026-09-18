@@ -48,6 +48,15 @@ Future<void> main(List<String> args) async {
           'vcodec': 'avc1', 'acodec': 'mp4a', 'protocol': 'https',
           'tbr': 90,
         },
+        {
+          // DASH-with-audio — starts with 'http' but the url is a
+          // fragment base/manifest, not a playable file.
+          'format_id': 'd720', 'ext': 'mp4', 'height': 720,
+          'vcodec': 'avc1', 'acodec': 'mp4a',
+          'protocol': 'http_dash_segments',
+          'tbr': 2400,
+          'url': 'https://cdn.fixture/d720.mpd',
+        },
       ],
       'subtitles': {
         'en': [{'ext': 'vtt', 'url': 'http://x/en.vtt'}],

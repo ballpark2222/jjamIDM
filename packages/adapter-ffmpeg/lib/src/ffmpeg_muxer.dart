@@ -87,10 +87,15 @@ final class FfmpegMuxer implements MediaMuxer {
       return const MuxResult(ok: false, error: 'no inputs');
     }
     final outPath = _resolve(step.outputFileName, workDir);
+    final total =
+        step.inputs.length + step.subtitleInputs.length;
     final args = <String>[
       '-y',
       for (final i in step.inputs) ...['-i', _resolve(i, workDir)],
       for (final s in step.subtitleInputs) ...['-i', _resolve(s, workDir)],
+      // Without -map ffmpeg auto-selects ONE stream per type —
+      // a second subtitle input would silently never land.
+      for (var i = 0; i < total; i++) ...['-map', '$i'],
       '-c', 'copy',
       '-c:s', _subCodecFor(outPath),
       outPath,

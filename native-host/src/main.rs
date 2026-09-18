@@ -939,6 +939,22 @@ fn main() {
         }
     }
 
+    // Chrome and Edge each spawn their OWN host process against the
+    // same config — a shared queue dir means the second engine's
+    // queue lock acquisition fails and every download on that
+    // browser dies with a spawn error. Key the queue by the calling
+    // origin so each browser owns an isolated queue (parked tasks
+    // stay with the browser that created them anyway).
+    if !self_test {
+        if let (Some(q), Some(origin)) = (&cfg.queue_dir, args.get(1)) {
+            let tag: String = origin
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            cfg.queue_dir = Some(format!("{}\\{}", q, tag));
+        }
+    }
+
     // Reader thread: frames in; the main loop owns all writes so
     // engine task events can stream to the browser even while stdin
     // is idle.

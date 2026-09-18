@@ -139,8 +139,9 @@ final class YtDlpResolver implements MediaResolver {
     if (!info.supported) {
       throw StateError('unsupported media url ${selection.pageUrl}');
     }
-    final name = _sanitize(
+    var name = _sanitize(
         selection.outputFileName ?? info.title ?? 'media');
+    if (name.isEmpty) name = 'media';
     final byId = {for (final f in info.formats) f.formatId: f};
     final video = selection.videoFormatId != null
         ? byId[selection.videoFormatId]
@@ -153,9 +154,11 @@ final class YtDlpResolver implements MediaResolver {
     // Progressive file (has both streams) or plain http → engine.
     // Split A/V or adaptive protocols → yt-dlp fetches itself.
     // The engine must fetch the format's resolved URL — pageUrl is
-    // the HTML watch page, not the media bytes.
+    // the HTML watch page, not the media bytes. Only bare http(s)
+    // is a real file: http_dash_segments urls are manifests or
+    // fragment bases, not the media itself.
     final direct = video != null &&
-        video.protocol.startsWith('http') &&
+        (video.protocol == 'http' || video.protocol == 'https') &&
         (video.url ?? '').isNotEmpty &&
         audio == null;
     if (direct && video.hasAudio) {
@@ -164,6 +167,24 @@ final class YtDlpResolver implements MediaResolver {
         outputFileName: '$name.${video.ext}',
         headers: headers,
       ));
+      // Selected subs ride the engine too — role 'subtitle' routes
+      // their outputs into run.subtitles for the attach stage.
+      // Skip formats ffmpeg can't transcode into the container.
+      const attachable = {'vtt', 'srt', 'ass', 'ssa', 'ttml'};
+      final wanted = selection.subtitleLangs.toSet();
+      for (final s in info.subtitles) {
+        if (wanted.contains(s.lang) &&
+            attachable.contains(s.ext.toLowerCase()) &&
+            (s.url ?? '').isNotEmpty) {
+          steps.add(EngineDownloadStep(
+            url: s.url!,
+            outputFileName:
+                '$name.${_sanitize(s.lang)}.${_sanitize(s.ext)}',
+            role: 'subtitle',
+            headers: headers,
+          ));
+        }
+      }
       return MediaPlan(steps: steps, finalFileName: '$name.${video.ext}');
     }
     // Component step — yt-dlp resolves + downloads the format graph.

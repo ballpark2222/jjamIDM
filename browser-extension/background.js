@@ -520,7 +520,10 @@ chrome.runtime.onMessage.addListener((m, _s, send) => {
         const id = await sendToFreeDM({
           ...req,
           filename: m.filename || req.filename,
-          subdir: m.subdir,
+          // ?? not || — an empty subdir is a real choice (root of
+          // downloadDir), but an absent field must keep the
+          // type-folder routing computed at capture time.
+          subdir: m.subdir ?? req.subdir,
           absDir: m.absDir,
           maxConnections: m.maxConnections,
           startNow: m.startNow,
