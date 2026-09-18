@@ -97,6 +97,25 @@
     if (!chipTarget) chip.style.display = 'none';
   });
 
+  // The chip is fixed-positioned off the hover-time rect — a page
+  // scroll leaves it hovering over the wrong spot until the next
+  // mousemove. Reposition on scroll (capture phase: the video can
+  // live inside a scrollable container, not just the document).
+  function reposition() {
+    if (!chipTarget || chip.style.display === 'none') return;
+    const r = chipTarget.getBoundingClientRect();
+    if (r.width < 160 || r.height < 90 ||
+        r.bottom < 0 || r.top > window.innerHeight) {
+      chipTarget = null;
+      chip.style.display = 'none';
+      return;
+    }
+    chip.style.left = `${Math.max(4, r.right - 130)}px`;
+    chip.style.top = `${Math.max(4, r.top + 8)}px`;
+  }
+  document.addEventListener('scroll', reposition,
+      { passive: true, capture: true });
+
   chip.addEventListener('click', (ev) => {
     ev.stopPropagation();
     ev.preventDefault();

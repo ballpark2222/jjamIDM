@@ -288,8 +288,12 @@ final class MediaDownloadCoordinator {
         }
       }
 
-      // Subtitle stage — attach selected langs as files.
-      if (sel.subtitleLangs.isNotEmpty && run.produced.isNotEmpty) {
+      // Subtitle stage — attach selected langs as files. No
+      // collected subs means the stream had none to give; deliver
+      // the video anyway rather than failing a finished download.
+      if (sel.subtitleLangs.isNotEmpty &&
+          run.subtitles.isNotEmpty &&
+          run.produced.isNotEmpty) {
         task = _to(task, DownloadStatus.subtitleProcessing);
         final video = run.produced.last;
         final r = await _muxer.attachSubtitles(video, run.subtitles);
@@ -492,7 +496,27 @@ final class MediaDownloadCoordinator {
     if (code != 0) {
       throw StateError('${step.componentId} exited $code');
     }
-    return _producedFile(run.workDir, step.outputFileName, path);
+    final produced =
+        _producedFile(run.workDir, step.outputFileName, path);
+    // --write-subs drops <name>.<lang>.<ext> siblings — collect
+    // them or the subtitle stage has nothing to attach and the
+    // files die orphaned in the work dir.
+    if (run.sel.subtitleLangs.isNotEmpty) {
+      const subExts = {
+        '.vtt', '.srt', '.ass', '.ssa', '.ttml', '.srv', '.lrc'
+      };
+      for (final f
+          in Directory(run.workDir).listSync().whereType<File>()) {
+        final n = f.uri.pathSegments.last;
+        if (!n.startsWith('${step.outputFileName}.')) continue;
+        final dot = n.lastIndexOf('.');
+        if (dot > 0 &&
+            subExts.contains(n.substring(dot).toLowerCase())) {
+          run.subtitles.add(f.path);
+        }
+      }
+    }
+    return produced;
   }
 
   /// The downloader may have written a sibling of [path] — yt-dlp

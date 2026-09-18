@@ -59,6 +59,9 @@ final class TaskStateMachine {
       DownloadStatus.pausing,
       DownloadStatus.downloadingAudio,
       DownloadStatus.muxing,
+      // Single-stream plans skip muxing — subs attach straight
+      // onto the produced file.
+      DownloadStatus.subtitleProcessing,
       DownloadStatus.verifying, // single-stream: no mux needed
       DownloadStatus.retryWait,
       DownloadStatus.urlExpired,
@@ -69,6 +72,7 @@ final class TaskStateMachine {
       DownloadStatus.pausing,
       DownloadStatus.downloadingVideo, // next plan step is video-side
       DownloadStatus.muxing,
+      DownloadStatus.subtitleProcessing,
       DownloadStatus.verifying,
       DownloadStatus.retryWait,
       DownloadStatus.urlExpired,

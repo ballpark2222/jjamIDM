@@ -103,6 +103,7 @@ final class FakeResolver implements MediaResolver {
 
 final class FakeMuxer implements MediaMuxer {
   final muxed = <MuxStep>[];
+  final attachCalls = <(String, List<String>)>[];
   bool fail = false;
   @override
   String get providerId => 'media.ffmpeg-fake';
@@ -117,8 +118,15 @@ final class FakeMuxer implements MediaMuxer {
   }
   @override
   Future<MuxResult> attachSubtitles(String v, List<String> subs,
-          {String? outputPath}) async =>
-      MuxResult(ok: true, outputPath: outputPath ?? v);
+      {String? outputPath}) async {
+    attachCalls.add((v, subs));
+    // Mirrors the real adapter — an empty list is a hard error,
+    // so callers must not invoke this with nothing to attach.
+    if (subs.isEmpty) {
+      return const MuxResult(ok: false, error: 'no subtitles');
+    }
+    return MuxResult(ok: true, outputPath: outputPath ?? v);
+  }
   @override
   Future<String> version() async => 'fake';
 }
@@ -130,6 +138,10 @@ final class FakeDownloader implements ComponentDownloader {
   /// instead of outputPath itself (real yt-dlp appends the
   /// container ext to a bare -o name).
   String? extSuffix;
+
+  /// Simulates yt-dlp's `--write-subs` — each suffix (e.g.
+  /// '.ko.vtt') is written as an `outputPath`-prefixed sibling.
+  List<String> subSuffixes = const [];
   @override
   String get componentId => 'tool.ytdlp';
   @override
@@ -144,6 +156,9 @@ final class FakeDownloader implements ComponentDownloader {
     calls++;
     onProgress?.call(1.0);
     await File(outputPath + (extSuffix ?? '')).writeAsBytes([9]);
+    for (final s in subSuffixes) {
+      await File(outputPath + s).writeAsBytes([8]);
+    }
     return 0;
   }
 }
@@ -408,6 +423,75 @@ void main() {
     await waitFor(mc, t.id, DownloadStatus.completed);
     expect(File('${dir.path}/v.mkv').existsSync(), isTrue);
     expect(File('${dir.path}/v').existsSync(), isFalse);
+    await mc.dispose();
+  });
+
+  test('component step collects yt-dlp subtitle siblings for the '
+      'attach stage', () async {
+    // yt-dlp --write-subs drops <name>.<lang>.vtt next to the
+    // video — orphaned in the work dir they'd never reach
+    // attachSubtitles and the requested subs would silently vanish.
+    final dl = FakeDownloader()
+      ..extSuffix = '.mkv'
+      ..subSuffixes = ['.ko.vtt'];
+    final muxer = FakeMuxer();
+    final mc = MediaDownloadCoordinator(
+      engine: FakeEngine(),
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'v',
+        steps: [
+          ComponentDownloadStep(
+              componentId: 'tool.ytdlp', outputFileName: 'v'),
+        ],
+      )),
+      muxer: muxer,
+      componentDownloaders: {'tool.ytdlp': dl},
+    );
+    final t = await mc.enqueueMedia(
+      const MediaSelection(
+          pageUrl: 'https://x/watch', subtitleLangs: ['ko']),
+      workDir: '${dir.path}/work',
+      targetDirectory: dir.path,
+    );
+    await waitFor(mc, t.id, DownloadStatus.completed);
+    final attach = muxer.attachCalls.single;
+    expect(attach.$2.single, endsWith('v.ko.vtt'));
+    expect(File('${dir.path}/v.mkv').existsSync(), isTrue);
+    await mc.dispose();
+  });
+
+  test('component step with requested subs but none produced still '
+      'delivers the video', () async {
+    // A video with no subs must not fail the whole download —
+    // attachSubtitles errors on an empty list, so the stage has
+    // to be skipped when nothing was collected.
+    final dl = FakeDownloader()..extSuffix = '.mkv';
+    final muxer = FakeMuxer();
+    final mc = MediaDownloadCoordinator(
+      engine: FakeEngine(),
+      repository: repo,
+      eventBus: bus,
+      resolver: FakeResolver(const MediaPlan(
+        finalFileName: 'v',
+        steps: [
+          ComponentDownloadStep(
+              componentId: 'tool.ytdlp', outputFileName: 'v'),
+        ],
+      )),
+      muxer: muxer,
+      componentDownloaders: {'tool.ytdlp': dl},
+    );
+    final t = await mc.enqueueMedia(
+      const MediaSelection(
+          pageUrl: 'https://x/watch', subtitleLangs: ['ko']),
+      workDir: '${dir.path}/work',
+      targetDirectory: dir.path,
+    );
+    await waitFor(mc, t.id, DownloadStatus.completed);
+    expect(muxer.attachCalls, isEmpty);
+    expect(File('${dir.path}/v.mkv').existsSync(), isTrue);
     await mc.dispose();
   });
 
